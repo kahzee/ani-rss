@@ -5,7 +5,6 @@ import ani.rss.entity.BgmInfo;
 import ani.rss.simple.SimpleModel.*;
 import ani.rss.util.other.BgmUtil;
 import com.google.gson.*;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -17,12 +16,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class SimpleTrackingService {
     private final SimpleStore store;
     private final SimpleCatalog catalog;
     private final SimpleDownloader downloader;
-    private final PlaybackLibrary library = new PlaybackLibrary();
+    private final PlaybackLibrary library;
+    public SimpleTrackingService(SimpleStore store, SimpleCatalog catalog, SimpleDownloader downloader) {
+        this.store=store; this.catalog=catalog; this.downloader=downloader;
+        this.library=new PlaybackLibrary(store.directory().resolve("simple-playback"));
+    }
     private final AtomicBoolean running = new AtomicBoolean();
     private volatile boolean forceCatalog;
 

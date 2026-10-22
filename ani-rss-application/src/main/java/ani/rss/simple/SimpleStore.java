@@ -26,6 +26,7 @@ public class SimpleStore {
     }
 
     public State state() { return state; }
+    Path directory() { return file.toAbsolutePath().getParent(); }
     public State snapshot() { return GsonStatic.fromJson(publicSnapshot, State.class); }
 
     public void save() throws IOException {

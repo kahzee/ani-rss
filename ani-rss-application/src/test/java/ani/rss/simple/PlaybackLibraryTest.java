@@ -3,6 +3,7 @@ package ani.rss.simple;
 import ani.rss.simple.SimpleModel.*;
 import ani.rss.commons.GsonStatic;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.file.*;
@@ -11,7 +12,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class PlaybackLibraryTest {
     @TempDir Path root;
-    private final PlaybackLibrary library = new PlaybackLibrary();
+    private PlaybackLibrary library;
+    @BeforeEach void setup() { library=new PlaybackLibrary(root.resolve("metadata")); }
 
     private Settings settings() {
         Settings settings = new Settings();
@@ -110,5 +112,34 @@ class PlaybackLibraryTest {
         assertEquals("old",show.getSelected().get("1")); assertTrue(show.getPinnedEpisodes().contains("1"));
         library.clearPin(settings,show,"1"); show.getPinnedEpisodes().clear(); library.reconcile(settings,show);
         assertFalse(show.getPinnedEpisodes().contains("1"));
+    }
+
+    @Test void manifestsStayOutsideMediaAndSurviveUpgradeAcrossRestart() throws Exception {
+        Settings settings=settings();Show show=show();Release old=resource("old","mp4","old");show.getReleases().add(old);
+        old.setPublishedFiles(library.publish(settings,show,old));show.getSelected().put("1","old");
+        assertFalse(Files.exists(library.seasonDirectory(settings,show).resolve(".ani-rss-E1.json")));
+        assertTrue(Files.exists(library.metadataDirectory(settings,show).resolve(".ani-rss-E1.json")));
+        PlaybackLibrary restarted=new PlaybackLibrary(root.resolve("metadata"));restarted.reconcile(settings,show);
+        Release next=resource("new","mkv","new");restarted.publish(settings,show,next);
+        assertFalse(Files.exists(Path.of(old.getPublishedFiles().getFirst())));
+        assertEquals("old",Files.readString(Path.of(old.getVideoPath())));
+    }
+
+    @Test void lostNasManifestsRemoveOnlyVerifiedObsoletePlaybackCopies() throws Exception {
+        Settings settings=settings();Show show=show();Release old=resource("old","mp4","old"),next=resource("new","mkv","new");show.getReleases().addAll(List.of(old,next));
+        old.setPublishedFiles(library.publish(settings,show,old));next.setPublishedFiles(library.publish(settings,show,next));show.getSelected().put("1","new");
+        Path leftover=Path.of(old.getPublishedFiles().getFirst());Files.copy(Path.of(old.getVideoPath()),leftover);
+        Path unrelated=leftover.resolveSibling("测试番剧 S01E01.avi");Files.writeString(unrelated,"personal file");
+        PlaybackLibrary restored=new PlaybackLibrary(root.resolve("fresh-metadata"));restored.reconcile(settings,show);
+        assertFalse(Files.exists(leftover));assertTrue(Files.exists(unrelated));
+        assertEquals("new",Files.readString(Path.of(next.getPublishedFiles().getFirst())));assertEquals(1,next.getPublishedFiles().size());
+        assertTrue(Files.exists(Path.of(old.getVideoPath())));
+    }
+
+    @Test void missingManifestNeverAdoptsChangedOrUnrelatedFiles() throws Exception {
+        Settings settings=settings();Show show=show();Release release=resource("old","mp4","original");show.getReleases().add(release);
+        release.setPublishedFiles(library.publish(settings,show,release));show.getSelected().put("1","old");Path playing=Path.of(release.getPublishedFiles().getFirst());Files.writeString(playing,"personal replacement");
+        PlaybackLibrary restored=new PlaybackLibrary(root.resolve("fresh-metadata"));
+        assertThrows(IOException.class,()->restored.reconcile(settings,show));assertEquals("personal replacement",Files.readString(playing));
     }
 }

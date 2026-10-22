@@ -8,6 +8,8 @@ import java.util.*;
 
 /** Copies preserve originals and seeding, including when library and playback use different disks. */
 public class PlaybackLibrary {
+    private final Path stateRoot;
+    public PlaybackLibrary(Path stateRoot) { this.stateRoot=stateRoot; }
     public static final Set<String> VIDEO = Set.of("mkv", "mp4", "avi", "mov", "ts", "m2ts", "webm");
     public static final Set<String> SUBTITLE = Set.of("ass", "ssa", "srt", "vtt", "sup", "sub", "idx");
 
@@ -52,6 +54,13 @@ public class PlaybackLibrary {
         return inside(parent, safeName(show.getTitle()) + String.format(Locale.ROOT, " 第%02d季", show.getSeason()));
     }
 
+    Path metadataDirectory(Settings settings, Show show) throws IOException {
+        String scope=UUID.nameUUIDFromBytes(settings.getPlaybackRoot().getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        Path directory=inside(stateRoot,scope+"/"+show.getId()+"/season-"+show.getSeason());
+        Files.createDirectories(directory);
+        return directory;
+    }
+
     public String baseName(Show show, double episode) {
         String ep = episode == Math.rint(episode) ? String.format(Locale.ROOT, "%02d", (int) episode) : ReleasePolicy.episodeKey(episode);
         return safeName(show.getTitle()) + String.format(Locale.ROOT, " S%02dE%s", show.getSeason(), ep);
@@ -65,8 +74,9 @@ public class PlaybackLibrary {
         Path season = seasonDirectory(settings, show);
         Files.createDirectories(season);
         String episode = ReleasePolicy.episodeKey(release.getEpisode());
-        Path manifest = season.resolve(".ani-rss-E" + episode + ".json");
-        Path journal = season.resolve(".ani-rss-E" + episode + ".transaction.json");
+        Path metadata=metadataDirectory(settings,show);
+        Path manifest = metadata.resolve(".ani-rss-E" + episode + ".json");
+        Path journal = metadata.resolve(".ani-rss-E" + episode + ".transaction.json");
         recover(season, journal);
         Manifest previous = Files.exists(manifest) ? GsonStatic.fromJson(Files.readString(manifest), Manifest.class) : new Manifest();
         LinkedHashMap<String, Path> inputs = new LinkedHashMap<>();
@@ -102,7 +112,7 @@ public class PlaybackLibrary {
                 Path target = inside(season, entry.getKey());
                 if (Files.exists(target) && !previous.files.contains(entry.getKey()))
                     throw new IOException("正式目录存在非本程序管理的同名文件，已保留: " + entry.getKey());
-                String stage = ".ani-rss-" + token + "-" + tx.staged.size() + ".pending";
+                String stage = "ani-rss-" + token + "-" + tx.staged.size() + ".pending";
                 Files.copy(entry.getValue(), season.resolve(stage));
                 tx.staged.put(entry.getKey(), stage);
             }
@@ -110,7 +120,7 @@ public class PlaybackLibrary {
             affected.addAll(inputs.keySet());
             for (String name : affected) {
                 Path target = inside(season, name);
-                String backup = ".ani-rss-" + token + "-" + tx.backups.size() + ".backup";
+                String backup = "ani-rss-" + token + "-" + tx.backups.size() + ".backup";
                 if (Files.exists(target)) {
                     Files.copy(target, season.resolve(backup));
                     tx.backups.put(name, backup);
@@ -149,10 +159,23 @@ public class PlaybackLibrary {
     public void reconcile(Settings settings, Show show) throws IOException {
         Path season = seasonDirectory(settings, show);
         if (!Files.isDirectory(season)) return;
+        Path metadata=metadataDirectory(settings,show);
+        // Recover/import older installations whose journals lived beside the media.
         try (DirectoryStream<Path> journals = Files.newDirectoryStream(season, ".ani-rss-E*.transaction.json")) {
             for (Path journal : journals) recover(season, journal);
         }
-        try (DirectoryStream<Path> manifests = Files.newDirectoryStream(season, ".ani-rss-E*.json")) {
+        try (DirectoryStream<Path> legacy = Files.newDirectoryStream(season, ".ani-rss-E*.json")) {
+            for (Path old : legacy) {
+                if (!old.getFileName().toString().matches("\\.ani-rss-E\\d+(?:\\.5)?\\.json")) continue;
+                Path target=metadata.resolve(old.getFileName());
+                if (!Files.exists(target)) Files.copy(old,target);
+            }
+        }
+        try (DirectoryStream<Path> journals = Files.newDirectoryStream(metadata, ".ani-rss-E*.transaction.json")) {
+            for (Path journal : journals) recover(season,journal);
+        }
+        restoreMissingManifests(settings,show,season,metadata);
+        try (DirectoryStream<Path> manifests = Files.newDirectoryStream(metadata, ".ani-rss-E*.json")) {
             for (Path manifest : manifests) {
                 String name = manifest.getFileName().toString();
                 if (!name.matches("\\.ani-rss-E\\d+(?:\\.5)?\\.json")) continue;
@@ -178,12 +201,46 @@ public class PlaybackLibrary {
 
     public void clearPin(Settings settings, Show show, String episode) throws IOException {
         if (!episode.matches("\\d+(?:\\.5)?")) throw new IllegalArgumentException("无效集数");
-        Path season = seasonDirectory(settings, show);
-        Path file = season.resolve(".ani-rss-E" + episode + ".json");
+        reconcile(settings,show);
+        Path file = metadataDirectory(settings,show).resolve(".ani-rss-E" + episode + ".json");
         if (Files.exists(file)) {
             Manifest manifest = GsonStatic.fromJson(Files.readString(file), Manifest.class);
             manifest.manual = false;
             atomicWrite(file, GsonStatic.toJson(manifest));
+        }
+    }
+
+    /** Smart NAS mounts can discard hidden sidecars. Adopt only paths recorded by this app AND
+     * byte-identical to retained original resources; never guess ownership from a filename. */
+    private void restoreMissingManifests(Settings settings, Show show, Path season, Path metadata) throws IOException {
+        for (var selection : new ArrayList<>(show.getSelected().entrySet())) {
+            String episode=selection.getKey();
+            if (!episode.matches("\\d+(?:\\.5)?")) throw new IOException("播放清单包含无效集数");
+            Path manifest=metadata.resolve(".ani-rss-E"+episode+".json");
+            if (Files.exists(manifest)) continue;
+            Release selected=show.getReleases().stream().filter(r->Objects.equals(r.getId(),selection.getValue())).findFirst().orElse(null);
+            if (selected==null) continue;
+            Set<String> owned=new LinkedHashSet<>();
+            for (Release release : show.getReleases()) {
+                if (!ReleasePolicy.episodeKey(release.getEpisode()).equals(episode)) continue;
+                Path sourceRoot=inside(Path.of(settings.getLibraryRoot()),show.getId()+"/"+release.getId());
+                List<String> sources=new ArrayList<>(release.getSubtitles());
+                if (release.getVideoPath()!=null) sources.add(release.getVideoPath());
+                for (String published : release.getPublishedFiles()) {
+                    Path target=Path.of(published).toAbsolutePath().normalize();
+                    String name=target.getFileName().toString();
+                    if (!target.equals(inside(season,name)) || !name.startsWith(baseName(show,release.getEpisode())+"."))
+                        throw new IOException("播放清单路径不在本集目录中");
+                    if (!Files.isRegularFile(target)) continue;
+                    for (String value : sources) {
+                        Path source=checkedSource(sourceRoot,value);
+                        if (Files.size(source)==Files.size(target) && Files.mismatch(source,target)==-1) {owned.add(name);break;}
+                    }
+                }
+            }
+            Manifest previous=new Manifest();previous.releaseId=selected.getId();previous.manual=show.getPinnedEpisodes().contains(episode);previous.files=new ArrayList<>(owned);
+            atomicWrite(manifest,GsonStatic.toJson(previous));
+            selected.setPublishedFiles(publish(settings,show,selected,previous.manual));
         }
     }
 
@@ -203,7 +260,7 @@ public class PlaybackLibrary {
             if (entry.getValue().isEmpty()) Files.deleteIfExists(target);
             else Files.copy(inside(directory, entry.getValue()), target, StandardCopyOption.REPLACE_EXISTING);
         }
-        Path manifest = inside(directory, tx.manifestName);
+        Path manifest = inside(journal.toAbsolutePath().getParent(), tx.manifestName);
         if (tx.oldManifest == null) Files.deleteIfExists(manifest);
         else atomicWrite(manifest, tx.oldManifest);
         Files.delete(journal);
