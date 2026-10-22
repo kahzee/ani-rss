@@ -21,12 +21,20 @@
       <el-empty v-if="!state.shows.length" description="还没有关注的番剧。找到喜欢的，点一下追番。"><el-button type="primary" @click="tab='discover'; discover()">去找番</el-button></el-empty>
     </div>
 
-    <div v-else v-loading="searching" class="show-grid">
-      <article v-for="show in results" :key="show.id" class="show-card discovery">
-        <div class="cover"><img v-if="show.image" :src="show.image" :alt="show.title" loading="lazy"><span v-else>番</span></div>
-        <div class="card-info"><h2>{{ show.title }}</h2><p>{{ show.subtitle }}</p><el-button type="primary" :disabled="isFollowed(show.id)" :loading="following === show.id" @click="follow(show)">{{ isFollowed(show.id) ? '已在追' : '追番' }}</el-button></div>
-      </article>
-      <el-empty v-if="!results.length && !searching" description="输入番名搜索，也可以浏览近期番剧。"/>
+    <div v-else class="discovery-list" v-loading="searching">
+      <div class="discovery-heading"><div><strong>{{ sourceMode === 'mikan' ? '蜜柑新番列表' : 'Bangumi 搜索结果' }}</strong><p v-if="sourceMode === 'mikan'">每 10 分钟自动更新 · {{ catalog.checkedAt ? `最近同步 ${formatTime(catalog.checkedAt)}` : '正在获取番剧列表' }}<span v-if="catalog.refreshing"> · 同步中</span></p></div><span>{{ visibleResults.length }} 部番剧</span></div>
+      <el-alert v-if="sourceMode === 'mikan' && catalog.error" :title="catalog.error" type="warning" :closable="false" show-icon/>
+      <el-radio-group v-if="sourceMode === 'mikan'" v-model="weekday" class="weekday-filter" size="small"><el-radio-button v-for="day in weekdays" :key="day" :value="day">{{ day }}</el-radio-button></el-radio-group>
+      <div class="anime-list">
+        <article v-for="show in visibleResults" :key="`${show.source || 'bgm'}-${show.id}`" class="anime-row">
+          <img v-if="show.image" :src="show.image" :alt="show.title" loading="lazy" class="list-cover"><div v-else class="list-cover cover-placeholder">番</div>
+          <div class="list-title"><h2>{{ show.title }}</h2><p>{{ show.weekday || show.subtitle }}</p></div>
+          <div v-if="show.source === 'mikan'" class="list-update"><span>蜜柑资源更新</span><strong>{{ show.updated || '暂无发布' }}</strong><a :href="show.url" target="_blank" rel="noopener noreferrer">蜜柑详情 ↗</a></div>
+          <el-button type="primary" :disabled="isDiscoveryFollowed(show)" :loading="following === show.id" @click="follow(show)">{{ isDiscoveryFollowed(show) ? '已在追' : '追番' }}</el-button>
+        </article>
+      </div>
+      <el-empty v-if="!visibleResults.length && !searching" :description="catalog.refreshing ? '首次列表同步中，稍后会自动显示。' : '没有匹配的番剧，试试其他名称或星期。'"/>
+      <p class="hint">番剧与资源更新日期来自蜜柑计划；更新日期不代表已有认可字幕组的中文字幕。</p>
     </div>
 
     <el-dialog v-model="settingsOpen" title="一次配置，持续追番" width="min(620px, 94vw)" :close-on-click-modal="false">
@@ -71,6 +79,16 @@ const state = ref({settings: {trustedGroups: []}, shows: []})
 const loading = ref(true), refreshing = ref(false), searching = ref(false), following = ref(''), saving = ref(false), testing = ref(false), working = ref('')
 const tab = ref('following'), query = ref(''), results = ref([]), settingsOpen = ref(false), detailOpen = ref(false), detail = ref(null)
 const settings = reactive({}), preferences = reactive({}), trustedText = ref(''), preferenceText = ref('')
+const catalog = ref({items: [], checkedAt: 0, refreshing: false, error: ''}), weekday = ref('全部'), sourceMode = ref('mikan'), followedMikan = ref({})
+const weekdays = computed(() => ['全部', ...new Set(catalog.value.items.map(show => show.weekday))])
+const visibleResults = computed(() => {
+  if(sourceMode.value !== 'mikan') return results.value
+  const keyword = query.value.trim().toLocaleLowerCase()
+  return catalog.value.items.filter(show => (weekday.value === '全部' || show.weekday === weekday.value) && (!keyword || show.title.toLocaleLowerCase().includes(keyword)))
+    .map(show => ({...show, source:'mikan'}))
+})
+const formatTime = timestamp => new Date(timestamp).toLocaleString('zh-CN',{hour12:false})
+const isDiscoveryFollowed = show => show.source === 'mikan' ? isFollowed(followedMikan.value[show.id] || catalog.value.subjectIds?.[show.id]) || state.value.shows.some(s => s.title === show.title) : isFollowed(show.id)
 let timer
 const post = (name, body) => api.post(`api/simple/${name}`, body)
 const lines = text => [...new Set(text.split('\n').map(v => v.trim()).filter(Boolean))]
@@ -93,7 +111,7 @@ const episodes = computed(() => {
 const statusLabel = release => ({available:'可按需下载', submitting:'正在提交', downloading:`下载中 ${Math.round(release.progress)}%`, ready:'已在资源库', error:'等待重试'}[release.status] || release.status)
 
 async function load() {
-  try {state.value = (await post('state')).data; if (detailOpen.value && detail.value) await loadDetail(detail.value.show.id)} finally {loading.value=false}
+  try {state.value = (await post('state')).data; if (detailOpen.value && detail.value) await loadDetail(detail.value.show.id); if(tab.value==='discover' && sourceMode.value==='mikan' && !searching.value) await discover(false)} finally {loading.value=false}
 }
 async function loadDetail(id) {detail.value=(await api.post(`api/simple/detail?id=${encodeURIComponent(id)}`)).data}
 async function openDetail(id) {
@@ -109,29 +127,30 @@ async function saveSettings() {
 }
 async function test() {testing.value=true; try {await post('test'); ElMessage.success('下载器连接成功')} finally {testing.value=false}}
 async function refresh() {refreshing.value=true; try {await post('refresh'); ElMessage.success('已开始检查，进度会自动刷新')} finally {refreshing.value=false}}
-async function discover() {
-  searching.value=true
+async function discover(showLoading=true) {
+  if(showLoading) searching.value=true
   try {
-    const {data}=await api.post('api/animeGardenList')
-    results.value=data.flatMap(week=>week.subjects.map(s=>({id:String(s.id),title:s.name,image:s.cover,subtitle:week.weekLabel})))
-  } finally {searching.value=false}
+    catalog.value=(await post('discover')).data
+    sourceMode.value='mikan'
+  } finally {if(showLoading) searching.value=false}
 }
-function changeTab(value) {if(value==='discover' && !results.value.length) discover().catch(()=>{})}
+function changeTab(value) {if(value==='discover') discover().catch(()=>{})}
 async function search() {
   if(!query.value.trim()) {tab.value='discover'; return discover()}
   tab.value='discover'; searching.value=true
   try {
     const match=query.value.match(/(?:bgm\.tv|bangumi\.tv|chii\.in)\/subject\/(\d+)/)
     if(match) {
+      sourceMode.value='bangumi'
       const {data}=await api.post(`api/animeGardenList?bgmUrl=${encodeURIComponent(query.value.trim())}`)
       results.value=data.flatMap(w=>w.subjects.map(s=>({id:String(s.id),title:s.name,image:s.cover,subtitle:'Bangumi'})))
     } else {
-      const {data}=await api.post(`api/searchBgm?name=${encodeURIComponent(query.value.trim())}`)
-      results.value=data.map(s=>({id:String(s.id),title:s.nameCn||s.name,image:s.images?.small,subtitle:s.nameCn?s.name:''}))
+      weekday.value='全部'
+      await discover(false)
     }
   } finally {searching.value=false}
 }
-async function follow(show) {following.value=show.id; try {await post('follow',{subjectId:show.id}); await load(); ElMessage.success('已关注，会自动补齐并持续追更')} finally {following.value=''}}
+async function follow(show) {following.value=show.id; try {if(show.source==='mikan') {const {data}=await post('follow-mikan',{mikanId:show.id}); followedMikan.value[show.id]=data.id} else await post('follow',{subjectId:show.id}); await load(); ElMessage.success('已关注，会自动补齐并持续追更')} finally {following.value=''}}
 function addGroup(group) {const values=lines(preferenceText.value); if(!values.includes(group)) preferenceText.value=[...values,group].join('\n')}
 async function savePreferences() {saving.value=true; try {await post('preferences',{...preferences,groups:lines(preferenceText.value)}); await load(); ElMessage.success('偏好已保存')} finally {saving.value=false}}
 async function versionAction(action,release) {
@@ -152,6 +171,8 @@ onUnmounted(stopPolling)
 </script>
 
 <style scoped>
+.discovery-heading{display:flex;justify-content:space-between;align-items:center;gap:20px}.discovery-heading>span{font-size:13px;color:var(--el-text-color-secondary)}.weekday-filter{margin:12px 0 20px;display:flex;flex-wrap:wrap;gap:5px}.anime-list{border:1px solid var(--el-border-color-lighter);border-radius:14px;background:var(--el-bg-color);overflow:hidden}.anime-row{display:flex;align-items:center;gap:22px;padding:18px 24px;border-bottom:1px solid var(--el-border-color-lighter)}.anime-row:last-child{border-bottom:0}.list-cover{width:58px;height:80px;object-fit:cover;border-radius:6px;flex-shrink:0}.cover-placeholder{display:flex;align-items:center;justify-content:center;background:var(--el-fill-color)}.list-title{flex:1;min-width:0}.list-title h2{margin:0;font-size:16px}.list-title p{margin:5px 0 0}.list-update{display:flex;flex-direction:column;gap:5px;width:145px;flex-shrink:0}.list-update span,.list-update a{font-size:12px;color:var(--el-text-color-secondary)}.list-update strong{font-size:13px;font-weight:500}.list-update a{text-decoration:none;color:var(--el-color-primary)}
+@media(max-width:600px){.anime-row{padding:15px 12px;gap:12px;flex-wrap:wrap}.list-title{flex-basis:calc(100% - 85px)}.list-update{margin-left:70px;flex:1}.list-cover{width:52px;height:74px}.anime-row>.el-button{margin-left:auto}.discovery-heading{align-items:flex-start}.weekday-filter{gap:4px}}
 .tracking{height:100%;overflow:auto;box-sizing:border-box;padding:40px clamp(18px,4vw,64px);background:var(--el-bg-color-page)}
 .page-header{display:flex;justify-content:space-between;align-items:center;gap:24px;margin-bottom:28px}.eyebrow{font-size:12px;color:var(--el-color-primary);letter-spacing:2px;font-weight:600}h1{font-size:clamp(25px,3vw,36px);letter-spacing:-1px;margin:12px 0}p{color:var(--el-text-color-secondary);font-size:13px;line-height:1.7;margin:8px 0}.actions{display:flex;white-space:nowrap}.toolbar{display:flex;justify-content:space-between;gap:20px;margin:28px 0}.search{max-width:420px}.show-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:20px;padding-bottom:30px}.show-grid>.el-empty{grid-column:1/-1;min-height:300px}.show-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:16px;overflow:hidden;display:flex;cursor:pointer;min-height:180px;transition:box-shadow .2s}.show-card:hover{box-shadow:0 8px 25px #00000010}.cover{width:116px;flex-shrink:0;position:relative;background:var(--el-fill-color);display:flex;align-items:center;justify-content:center;font-size:38px;color:var(--el-text-color-placeholder)}.cover img{width:100%;height:100%;object-fit:cover;position:absolute}.cover-count{position:absolute;bottom:0;left:0;right:0;background:#0009;color:white;font-size:12px;padding:10px;text-align:center}.card-info{padding:18px;min-width:0;display:flex;flex-direction:column;flex:1}h2{font-size:16px;line-height:1.5;margin:0 0 8px}.status{font-size:12px}.download-text{color:var(--el-color-primary)}.card-foot{display:flex;justify-content:space-between;gap:8px;margin-top:auto;font-size:11px;color:var(--el-text-color-secondary);padding-top:15px}.discovery .el-button{margin-top:auto;align-self:flex-start}.form-pair{display:grid;grid-template-columns:1fr 1.5fr;gap:16px}.hint{font-size:12px;color:var(--el-text-color-secondary);line-height:1.7}.path-box{padding:18px;background:var(--el-fill-color-light);border-radius:10px;margin-bottom:18px}.path-line{display:flex;align-items:center;gap:15px;margin-top:12px}.path-line code{overflow-wrap:anywhere;user-select:all;flex:1;font-size:13px}.preference-controls{display:flex;flex-wrap:wrap;gap:20px;align-items:center}.episode{margin-top:22px}.episode-heading{display:flex;gap:12px;align-items:center;margin-bottom:8px}.release{display:flex;justify-content:space-between;gap:18px;padding:15px 0;border-bottom:1px solid var(--el-border-color-lighter)}.release-info{min-width:0;flex:1}.release-info p{font-size:12px;overflow-wrap:anywhere}.release-actions{display:flex;flex-direction:column;align-items:flex-end;justify-content:center;gap:8px;font-size:12px;flex-shrink:0;color:var(--el-text-color-secondary)}.error{color:var(--el-color-danger)}
 @media(max-width:800px){.tracking{padding:24px 16px}.page-header{display:block}.actions{margin-top:18px}.toolbar{flex-direction:column}.search{max-width:none}.form-pair{grid-template-columns:1fr}.show-grid{grid-template-columns:1fr}.path-line{flex-wrap:wrap}.release{gap:8px}.release-actions{max-width:105px}}

@@ -156,7 +156,7 @@ public class SimpleTrackingService {
         boolean force = forceCatalog;
         forceCatalog = false;
         for (Show show : state.getShows()) {
-            if (show.isEnabled() && (force || System.currentTimeMillis() - show.getLastCatalogAt() >= 15 * 60_000L)) {
+            if (show.isEnabled() && (force || System.currentTimeMillis() - show.getLastCatalogAt() >= 10 * 60_000L)) {
                 try {
                     List<Release> fresh = catalog.releases(show);
                     Set<String> known = new HashSet<>();

@@ -11,6 +11,17 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class SimpleTrackingController {
     private final SimpleTrackingService service;
+    private final MikanDiscovery mikan;
+
+    @Auth @PostMapping("/simple/discover")
+    public Result<MikanDiscovery.Snapshot> discover() {
+        mikan.ensureLoaded(); return Result.success(mikan.snapshot());
+    }
+
+    @Auth @PostMapping("/simple/follow-mikan")
+    public Result<Show> followMikan(@RequestBody Map<String,String> request) throws Exception {
+        return Result.success(service.follow(mikan.subject(request.get("mikanId"))));
+    }
 
     @Auth @PostMapping("/simple/state")
     public Result<State> state() { return Result.success(service.state()); }
