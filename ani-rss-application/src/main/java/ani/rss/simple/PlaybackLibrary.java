@@ -44,6 +44,14 @@ public class PlaybackLibrary {
         return inside(Path.of(settings.getPlaybackRoot()), show.getFolder());
     }
 
+    /** Keep existing linked folders stable; new folders identify the show to Zspace scanners. */
+    public Path seasonDirectory(Settings settings, Show show) throws IOException {
+        Path parent = showDirectory(settings, show);
+        Path legacy = inside(parent, String.format(Locale.ROOT, "Season %02d", show.getSeason()));
+        if (Files.isDirectory(legacy)) return legacy;
+        return inside(parent, safeName(show.getTitle()) + String.format(Locale.ROOT, " 第%02d季", show.getSeason()));
+    }
+
     public String baseName(Show show, double episode) {
         String ep = episode == Math.rint(episode) ? String.format(Locale.ROOT, "%02d", (int) episode) : ReleasePolicy.episodeKey(episode);
         return safeName(show.getTitle()) + String.format(Locale.ROOT, " S%02dE%s", show.getSeason(), ep);
@@ -54,7 +62,7 @@ public class PlaybackLibrary {
     }
 
     public List<String> publish(Settings settings, Show show, Release release, boolean manual) throws IOException {
-        Path season = inside(showDirectory(settings, show), String.format(Locale.ROOT, "Season %02d", show.getSeason()));
+        Path season = seasonDirectory(settings, show);
         Files.createDirectories(season);
         String episode = ReleasePolicy.episodeKey(release.getEpisode());
         Path manifest = season.resolve(".ani-rss-E" + episode + ".json");
@@ -71,7 +79,11 @@ public class PlaybackLibrary {
         for (String subtitle : release.getSubtitles()) {
             Path source = checkedSource(sourceRoot, subtitle);
             // Preserve the original language suffix when present, with an index to avoid collisions.
-            String language = subtitleLanguage(source.getFileName().toString());
+            String language = switch (subtitleLanguage(source.getFileName().toString())) {
+                case "zh-Hans" -> "chs";
+                case "zh-Hant" -> "cht";
+                default -> subtitleLanguage(source.getFileName().toString());
+            };
             String original = source.toString().substring(0, source.toString().lastIndexOf('.'));
             // Paired .idx/.sub files must share a basename. Multiple language tracks stay distinct.
             String subtitleBase = subtitleNames.computeIfAbsent(original, ignored -> {
@@ -135,7 +147,7 @@ public class PlaybackLibrary {
 
     /** Reconcile committed playback manifests after a crash between file installation and state save. */
     public void reconcile(Settings settings, Show show) throws IOException {
-        Path season = inside(showDirectory(settings, show), String.format(Locale.ROOT, "Season %02d", show.getSeason()));
+        Path season = seasonDirectory(settings, show);
         if (!Files.isDirectory(season)) return;
         try (DirectoryStream<Path> journals = Files.newDirectoryStream(season, ".ani-rss-E*.transaction.json")) {
             for (Path journal : journals) recover(season, journal);
@@ -166,7 +178,7 @@ public class PlaybackLibrary {
 
     public void clearPin(Settings settings, Show show, String episode) throws IOException {
         if (!episode.matches("\\d+(?:\\.5)?")) throw new IllegalArgumentException("无效集数");
-        Path season = inside(showDirectory(settings, show), String.format(Locale.ROOT, "Season %02d", show.getSeason()));
+        Path season = seasonDirectory(settings, show);
         Path file = season.resolve(".ani-rss-E" + episode + ".json");
         if (Files.exists(file)) {
             Manifest manifest = GsonStatic.fromJson(Files.readString(file), Manifest.class);

@@ -44,6 +44,13 @@ class PlaybackLibraryTest {
         assertEquals("old video",Files.readString(Path.of(oldFiles.getFirst())));
         assertFalse(Files.exists(Path.of(files.getFirst())));
     }
+    @Test void newSeasonDirectoryIdentifiesShowWhileExistingLinksStayStable() throws Exception {
+        Settings settings=settings(); Show show=show();
+        assertEquals("测试番剧 第01季", library.seasonDirectory(settings,show).getFileName().toString());
+        Path legacy=library.showDirectory(settings,show).resolve("Season 01"); Files.createDirectories(legacy);
+        assertEquals(legacy, library.seasonDirectory(settings,show));
+    }
+
     @Test void failedUpgradeKeepsCurrentVideo() throws Exception {
         Settings settings=settings(); Show show=show(); Release old=resource("old","mkv","playable");
         Path playing=Path.of(library.publish(settings,show,old).getFirst());
@@ -92,8 +99,8 @@ class PlaybackLibraryTest {
         Release release=resource("old","mkv","video");
         for(String extension:List.of("idx","sub")) {Path path=Path.of(release.getDownloadPath()).resolve("original.chs."+extension);Files.writeString(path,"data");release.getSubtitles().add(path.toString());}
         List<String> files=library.publish(settings(),show(),release);
-        assertTrue(files.stream().anyMatch(f->f.endsWith("测试番剧 S01E01.zh-Hans.idx")), files.toString());
-        assertTrue(files.stream().anyMatch(f->f.endsWith("测试番剧 S01E01.zh-Hans.sub")), files.toString());
+        assertTrue(files.stream().anyMatch(f->f.endsWith("测试番剧 S01E01.chs.idx")), files.toString());
+        assertTrue(files.stream().anyMatch(f->f.endsWith("测试番剧 S01E01.chs.sub")), files.toString());
     }
 
     @Test void reconcilesManualSelectionAfterCrashAndCanRestoreAutomaticMode() throws Exception {

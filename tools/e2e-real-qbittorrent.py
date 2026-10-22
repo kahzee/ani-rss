@@ -84,10 +84,10 @@ def make_release(label, group, episode, color, number):
     video = folder / f"sample-{episode:02}.mp4"
     subtitle = folder / f"sample-{episode:02}.chs.srt"
     subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y",
-                    "-f", "lavfi", "-i", f"color=c={color}:s=320x180:r=24:d=4", "-f", "lavfi", "-i",
-                    "sine=frequency=440:duration=4", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-f", "lavfi", "-i", f"color=c={color}:s=320x180:r=24:d=30", "-f", "lavfi", "-i",
+                    "sine=frequency=440:duration=30", "-c:v", "libx264", "-pix_fmt", "yuv420p",
                     "-c:a", "aac", "-movflags", "+faststart", "-shortest", str(video)], check=True)
-    subtitle.write_text(f"1\n00:00:00,000 --> 00:00:03,500\n自动追番联调样片：{label}\n", encoding="utf-8")
+    subtitle.write_text(f"1\n00:00:00,000 --> 00:00:29,500\n自动追番联调样片：{label}\n", encoding="utf-8")
     storage = lt.file_storage()
     for file in (video, subtitle):
         storage.add_file(f"{label}/{file.name}", file.stat().st_size)
@@ -99,6 +99,8 @@ def make_release(label, group, episode, color, number):
     info = lt.torrent_info(metadata)
     torrent = ROOT / (label + ".torrent")
     torrent.write_bytes(metadata)
+    # Make metadata available alongside payloads for LAN HTTP-seed tests as well.
+    (SEEDS / torrent.name).write_bytes(metadata)
     handle = seed_session.add_torrent({"ti": info, "save_path": str(SEEDS), "flags": lt.torrent_flags.seed_mode})
     handles.append(handle)
     handle.resume()
@@ -243,7 +245,7 @@ try:
             continue
         expected = fallback1 if release["id"] == fallback1["hash"] else fallback2
         assert digest(release["videoPath"]) == digest(expected["video"])
-        assert any(path.endswith(".zh-Hans.srt") for path in release["publishedFiles"])
+        assert any(path.endswith(".chs.srt") for path in release["publishedFiles"])
         assert all(Path(path).is_file() for path in release["publishedFiles"])
     record("real_download_backfill_and_normalized_files", episodes=2, original_hashes_verified=True, chinese_sidecars=True)
     phase = 2
