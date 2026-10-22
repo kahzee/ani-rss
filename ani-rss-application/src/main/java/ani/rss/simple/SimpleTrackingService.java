@@ -30,7 +30,42 @@ public class SimpleTrackingService {
     private static final long STALL_TIMEOUT = 10 * 60_000L;
     private static final long RETRY_DELAY = 30 * 60_000L;
 
-    public State state() { return store.snapshot(); }
+    public State state() {
+        State snapshot=store.snapshot();
+        for(Show show:snapshot.getShows()) if(show.isEnabled())
+            show.setQueuedReleaseIds(ReleasePolicy.plan(show,snapshot.getSettings()).stream().map(Release::getId).toList());
+        return snapshot;
+    }
+
+    /** Transfer-only updates are cheap and do not refresh catalogs or change the download queue. */
+    @Scheduled(initialDelay = 25000, fixedDelay = 10000)
+    public synchronized void pollProgress() {
+        State state=store.state();Settings settings=state.getSettings();
+        if(settings.getDownloadHost().isBlank() || settings.getCredential().isBlank()
+                || state.getShows().stream().flatMap(s->s.getReleases().stream()).noneMatch(r->"downloading".equals(r.getStatus()))) return;
+        try {
+            downloader.connect(settings);JsonArray tasks=downloader.tasks();long now=System.currentTimeMillis();
+            for(Show show:state.getShows()) for(Release release:show.getReleases()) {
+                if(!"downloading".equals(release.getStatus())) continue;
+                JsonObject task=findTask(tasks,release.getId());
+                if(task!=null) transfer(release,task,now);
+            }
+            state.setDownloadCheckedAt(now);store.publish();
+        } catch(Exception e) {log.debug("下载进度暂未更新: {}",e.getClass().getSimpleName());}
+    }
+
+    private static void transfer(Release release,JsonObject task,long now) {
+        double progress=task.get("progress").getAsDouble()*100;
+        if(progress>release.getProgress()) release.setLastProgressAt(now);
+        release.setProgress(progress);
+        release.setDownloadState(task.has("state")?task.get("state").getAsString():"");
+        release.setDownloadSpeed(Math.max(0,number(task,"dlspeed",0)));
+        release.setDownloadedBytes(Math.max(0,number(task,"completed",number(task,"downloaded",0))));
+        release.setTotalBytes(Math.max(0,number(task,"total_size",number(task,"size",0))));
+        long eta=number(task,"eta",-1);release.setEtaSeconds(eta>=8640000?-1:eta);
+        release.setSeeds((int)number(task,"num_seeds",0));
+    }
+    private static long number(JsonObject task,String key,long fallback) {return task.has(key)&&!task.get(key).isJsonNull()?task.get(key).getAsLong():fallback;}
 
     public synchronized void settings(Settings incoming) throws IOException {
         Objects.requireNonNull(incoming.getTrustedGroups(), "请提供认可的字幕组名单");
@@ -187,12 +222,14 @@ public class SimpleTrackingService {
         }
         JsonArray tasks = downloader.tasks();
         long now=System.currentTimeMillis();
+        state.setDownloadCheckedAt(now);
         for (Show show : state.getShows()) {
             if(recoveryFailed.contains(show.getId())) continue;
             for (Release release : show.getReleases()) {
                 if (release.getDownloadPath() == null) continue;
                 JsonObject task = findTask(tasks, release.getId());
                 if (task != null && !"ready".equals(release.getStatus())) {
+                    transfer(release,task,now);
                     double progress=task.get("progress").getAsDouble()*100;
                     if (progress>release.getProgress()) release.setLastProgressAt(now);
                     if (release.getLastProgressAt()==0) {

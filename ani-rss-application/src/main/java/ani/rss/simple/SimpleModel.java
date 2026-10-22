@@ -37,6 +37,7 @@ public final class SimpleModel {
     public static class State {
         private Settings settings = new Settings();
         private List<Show> shows = new ArrayList<>();
+        private long downloadCheckedAt;
     }
 
     @Data
@@ -57,6 +58,8 @@ public final class SimpleModel {
         private long lastCatalogAt;
         private long lastQueuedAt;
         private String message = "等待检查资源";
+        // Filled on public snapshots, one planned resource per episode, not every alternative.
+        private List<String> queuedReleaseIds = new ArrayList<>();
     }
 
     @Data
@@ -74,6 +77,12 @@ public final class SimpleModel {
         private String videoPath;
         private List<String> subtitles = new ArrayList<>();
         private double progress;
+        private long downloadSpeed;
+        private long downloadedBytes;
+        private long totalBytes;
+        private long etaSeconds = -1;
+        private int seeds;
+        private String downloadState = "";
         private long lastProgressAt;
         private long retryAt;
         private String error = "";

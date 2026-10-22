@@ -39,7 +39,7 @@ public class SimpleStore {
         publish();
     }
 
-    private void publish() {
+    void publish() {
         State copy = GsonStatic.fromJson(GsonStatic.toJson(state), State.class);
         copy.getSettings().setCredentialSaved(!copy.getSettings().getCredential().isBlank());
         copy.getSettings().setCredential("");

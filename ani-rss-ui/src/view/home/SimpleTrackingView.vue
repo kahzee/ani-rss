@@ -15,9 +15,18 @@
     </div>
 
     <div v-if="tab === 'following'" class="show-grid">
+      <section v-if="activeDownloads.length || pendingDownloads.length" class="download-overview" aria-label="下载进度">
+        <div class="download-heading"><div><h2>下载进度</h2><p>{{ activeDownloads.length }} 个下载中 · {{ queuedDownloads.length }} 个排队<span v-if="retryDownloads.length"> · {{ retryDownloads.length }} 个待重试</span><span v-if="activeDownloads.length"> · {{ formatBytes(totalSpeed) }}/s</span></p></div><span class="sync-time">每 10 秒更新<span v-if="state.downloadCheckedAt"> · 最近 {{ new Date(state.downloadCheckedAt).toLocaleTimeString('zh-CN', {hour12:false}) }}</span></span></div>
+        <div v-for="item in activeDownloads" :key="item.release.id" class="transfer-row">
+          <div class="transfer-title"><el-button link type="primary" @click="openDetail(item.show.id)">{{ item.show.title }} · 第 {{ item.release.episode }} 集</el-button><span>{{ item.release.group }} · {{ downloadKind(item) }}</span></div>
+          <el-progress :percentage="percentage(item.release)" :stroke-width="8"/>
+          <div class="transfer-meta"><span>{{ transferState(item.release) }} · {{ formatBytes(item.release.downloadSpeed) }}/s</span><span v-if="item.release.totalBytes">{{ formatBytes(item.release.downloadedBytes) }} / {{ formatBytes(item.release.totalBytes) }}</span><span v-if="eta(item.release)">预计剩余 {{ eta(item.release) }}</span></div>
+        </div>
+        <details v-if="pendingDownloads.length" class="pending-downloads"><summary>等待下载 {{ pendingDownloads.length }} 个版本 · 展开查看</summary><div class="pending-list"><div v-for="item in pendingDownloads" :key="item.release.id" class="pending-row"><el-button link @click="openDetail(item.show.id)">{{ item.show.title }} · 第 {{ item.release.episode }} 集</el-button><span>{{ item.release.group }} · {{ downloadKind(item) }} · {{ item.retry ? '待重试' : '等待名额' }}</span></div></div></details>
+      </section>
       <article v-for="show in state.shows" :key="show.id" class="show-card" @click="openDetail(show.id)">
         <div class="cover"><img v-if="show.image" :src="show.image" :alt="show.title" loading="lazy"><span v-else>追</span><div class="cover-count">{{ Object.keys(show.selected).length }}{{ show.totalEpisodes ? ` / ${show.totalEpisodes}` : '' }} 集可看</div></div>
-        <div class="card-info"><h2>{{ show.title }}</h2><p class="status">{{ show.message }}</p><p v-if="downloading(show).length" class="download-text">{{ downloading(show).length }} 个版本下载中 · {{ Math.round(downloading(show)[0].progress) }}%</p><div class="card-foot"><span>{{ show.enabled ? '自动追番' : '已暂停' }}</span><span>版本与目录 →</span></div></div>
+        <div class="card-info"><h2>{{ show.title }}</h2><p class="status">{{ show.message }}</p><div v-for="release in downloading(show)" :key="release.id" class="card-progress"><span>第 {{ release.episode }} 集 · {{ transferState(release) }}</span><el-progress :percentage="percentage(release)" :stroke-width="5"/><span>{{ formatBytes(release.downloadSpeed) }}/s</span></div><p v-if="show.enabled && show.queuedReleaseIds?.length" class="download-text">{{ show.queuedReleaseIds.length }} 个版本等待下载</p><div class="card-foot"><span>{{ show.enabled ? '自动追番' : '已暂停' }}</span><span>版本与目录 →</span></div></div>
       </article>
       <el-empty v-if="!state.shows.length" description="还没有关注的番剧。找到喜欢的，点一下追番。"><el-button type="primary" @click="tab='discover'; discover()">去找番</el-button></el-empty>
     </div>
@@ -97,6 +106,26 @@ let timer
 const post = (name, body) => api.post(`api/simple/${name}`, body)
 const lines = text => [...new Set(text.split('\n').map(v => v.trim()).filter(Boolean))]
 const downloading = show => show.releases.filter(r => ['submitting','downloading'].includes(r.status))
+const activeDownloads = computed(() => state.value.shows.flatMap(show => downloading(show).map(release => ({show,release}))))
+const queuedDownloads = computed(() => state.value.shows.filter(show => show.enabled).flatMap(show => (show.queuedReleaseIds || []).map(id => ({show,release:show.releases.find(r => r.id===id)})).filter(item => item.release)))
+const retryDownloads = computed(() => state.value.shows.filter(show => show.enabled).flatMap(show => show.releases.filter(r => ['waiting','error'].includes(r.status) && r.retryAt && !(show.queuedReleaseIds || []).includes(r.id)).map(release => ({show,release,retry:true}))))
+const pendingDownloads = computed(() => [...queuedDownloads.value,...retryDownloads.value])
+const totalSpeed = computed(() => activeDownloads.value.reduce((sum,item) => sum+(item.release.downloadSpeed || 0),0))
+const percentage = release => Math.max(0,Math.min(100,Math.round((release.progress || 0)*10)/10))
+const downloadKind = item => item.show.selected[String(item.release.episode)] ? '版本升级' : '补齐'
+function formatBytes(value=0) {const n=Math.max(0,Number(value)||0);const units=['B','KB','MB','GB','TB'];const i=Math.min(4,n>0?Math.floor(Math.log(n)/Math.log(1024)):0);return `${(n/1024**i).toFixed(i ? 1 : 0)} ${units[i]}`}
+function transferState(release) {
+  const s=(release.downloadState || '').toLowerCase()
+  if(release.status==='submitting') return '正在提交'
+  if(s.includes('meta')) return '获取种子信息'
+  if(s.includes('checking')) return '校验文件'
+  if(s.startsWith('stopped') || s.startsWith('paused')) return '已暂停'
+  if(release.progress>=100) return '下载完成，正在整理'
+  if(s.includes('queued')) return '下载器排队中'
+  if(s==='stalleddl' || s==='forcedmetadl' || !release.downloadSpeed) return '等待连接 / 下载源'
+  return '正在下载'
+}
+function eta(release) {const s=release.etaSeconds;if(!release.downloadSpeed || s==null || s<0 || s>=8640000) return '';if(s<60)return `${Math.max(1,Math.ceil(s))} 秒`;if(s<3600)return `${Math.ceil(s/60)} 分钟`;return `${Math.floor(s/3600)} 小时 ${Math.ceil(s%3600/60)} 分钟`}
 const isFollowed = id => state.value.shows.some(show => show.id === String(id))
 const allowed = release => release.chinese && (detail.value.groups.some(g => g.toLowerCase() === release.group.toLowerCase()) || state.value.settings.allowOtherChinese && !detail.value.show.preferredGroups.length)
 const discoveredGroups = computed(() => [...new Set(detail.value?.show.releases.map(r => r.group) || [])].sort())
@@ -175,6 +204,7 @@ onUnmounted(stopPolling)
 </script>
 
 <style scoped>
+.download-overview{grid-column:1/-1;background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:16px;padding:20px 24px}.download-heading{display:flex;justify-content:space-between;gap:16px;align-items:center}.download-heading h2{margin:0;font-size:17px}.download-heading p{margin:5px 0 0}.sync-time,.transfer-meta,.transfer-title>span,.pending-row>span,.card-progress>span{font-size:12px;color:var(--el-text-color-secondary)}.transfer-row{padding:16px 0;border-top:1px solid var(--el-border-color-lighter);margin-top:14px}.transfer-title,.transfer-meta,.pending-row{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.transfer-title{margin-bottom:12px}.transfer-title .el-button,.pending-row .el-button{height:auto;white-space:normal;text-align:left;line-height:1.6}.transfer-meta{justify-content:flex-start;gap:18px;margin-top:8px}.pending-downloads{border-top:1px solid var(--el-border-color-lighter);padding-top:14px;margin-top:10px}.pending-downloads summary{cursor:pointer;font-size:13px;color:var(--el-text-color-secondary)}.pending-list{max-height:260px;overflow:auto;margin-top:10px}.pending-row{padding:8px 0}.card-progress{margin:8px 0}.card-progress .el-progress{margin:6px 0}.card-progress :deep(.el-progress__text){font-size:12px!important;min-width:42px}@media(max-width:600px){.download-overview{padding:18px 14px}.download-heading{display:block}.sync-time{display:block;margin-top:8px}.transfer-meta{gap:8px}}
 .discovery-heading{display:flex;justify-content:space-between;align-items:center;gap:20px}.discovery-heading>span{font-size:13px;color:var(--el-text-color-secondary)}.weekday-filter{margin:12px 0 20px;display:flex;flex-wrap:wrap;gap:5px}.anime-list{border:1px solid var(--el-border-color-lighter);border-radius:14px;background:var(--el-bg-color);overflow:hidden}.anime-row{display:flex;align-items:center;gap:22px;padding:18px 24px;border-bottom:1px solid var(--el-border-color-lighter)}.anime-row:last-child{border-bottom:0}.list-cover{width:58px;height:80px;object-fit:cover;border-radius:6px;flex-shrink:0}.cover-placeholder{display:flex;align-items:center;justify-content:center;background:var(--el-fill-color)}.list-title{flex:1;min-width:0}.list-title h2{margin:0;font-size:16px}.list-title p{margin:5px 0 0}.list-update{display:flex;flex-direction:column;gap:5px;width:145px;flex-shrink:0}.list-update span,.list-update a{font-size:12px;color:var(--el-text-color-secondary)}.list-update strong{font-size:13px;font-weight:500}.list-update a{text-decoration:none;color:var(--el-color-primary)}
 @media(max-width:600px){.anime-row{padding:15px 12px;gap:12px;flex-wrap:wrap}.list-title{flex-basis:calc(100% - 85px)}.list-update{margin-left:70px;flex:1}.list-cover{width:52px;height:74px}.anime-row>.el-button{margin-left:auto}.discovery-heading{align-items:flex-start}.weekday-filter{gap:4px}}
 .tracking{height:100%;overflow:auto;box-sizing:border-box;padding:40px clamp(18px,4vw,64px);background:var(--el-bg-color-page)}

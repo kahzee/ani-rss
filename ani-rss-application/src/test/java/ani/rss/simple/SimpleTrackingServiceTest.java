@@ -119,4 +119,18 @@ class SimpleTrackingServiceTest {
         assertTrue(b.getMessage().contains("排队"));dl.tasks.get("a").addProperty("state","stoppedDL");service.tick();
         assertEquals("paused",a.getReleases().getFirst().getStatus());assertTrue(dl.tasks.containsKey("b"));
     }
+
+    @Test void fastProgressPollPublishesLiveStatsAndQueueWithoutSubmittingTasks() throws Exception {
+        SimpleStore store=configured();store.state().getSettings().setSimultaneousDownloads(1);
+        Show s=show(store,"1");s.getReleases().addAll(List.of(release("one","首选",1),release("two","首选",2)));
+        Downloader dl=new Downloader();SimpleTrackingService service=new SimpleTrackingService(store,new Catalog(),dl);service.tick();
+        JsonObject task=dl.tasks.get("one");task.addProperty("progress",0.25);task.addProperty("dlspeed",1024);task.addProperty("completed",250);task.addProperty("total_size",1000);task.addProperty("eta",8640000);task.addProperty("num_seeds",3);
+        service.pollProgress();State snapshot=service.state();Release live=snapshot.getShows().getFirst().getReleases().getFirst();
+        assertEquals(25,live.getProgress());assertEquals(1024,live.getDownloadSpeed());assertEquals(250,live.getDownloadedBytes());assertEquals(1000,live.getTotalBytes());assertEquals(-1,live.getEtaSeconds());assertEquals(3,live.getSeeds());
+        assertTrue(snapshot.getDownloadCheckedAt()>0);assertEquals("",snapshot.getSettings().getCredential());
+        assertEquals(List.of("two"),snapshot.getShows().getFirst().getQueuedReleaseIds());assertEquals(Set.of("one"),dl.tasks.keySet());
+        assertTrue(s.getReleases().getFirst().getLastProgressAt()>0);
+        task.addProperty("total_size",-1);service.pollProgress();
+        assertEquals(0,service.state().getShows().getFirst().getReleases().getFirst().getTotalBytes());
+    }
 }
