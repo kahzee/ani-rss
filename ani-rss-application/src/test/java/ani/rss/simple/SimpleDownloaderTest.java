@@ -56,6 +56,17 @@ class SimpleDownloaderTest {
         Files.writeString(root.resolve("episode.mkv"),"video");replies.put("/api/v2/torrents/files","[{\"name\":\"episode.mkv\",\"progress\":0.5,\"size\":5}]");
         assertThrows(java.io.IOException.class,()->downloader.checkFinished(release));assertNotEquals("ready",release.getStatus());
     }
+    @Test void ownSuspendedTaskResumesWithoutDuplicatingIt() throws Exception {
+        downloader.connect(settings("qbt_test"));
+        replies.put("/api/v2/torrents/info","[{\"category\":\"ani-rss-simple\",\"save_path\":\""+root.toString().replace("\\","\\\\")+"\",\"state\":\"stoppedDL\"}]");
+        Release r=new Release();r.setId("a".repeat(40));downloader.add(r,root);
+        assertTrue(bodies.containsKey("/api/v2/torrents/start"));assertFalse(bodies.containsKey("/api/v2/torrents/add"));
+    }
+    @Test void stalledTaskPauseRefusesForeignPaths() throws Exception {
+        downloader.connect(settings("qbt_test"));Release r=new Release();r.setId("a".repeat(40));r.setDownloadPath(root.toString());
+        replies.put("/api/v2/torrents/info","[{\"category\":\"ani-rss-simple\",\"save_path\":\"/foreign\"}]");
+        assertThrows(java.io.IOException.class,()->downloader.pause(r));assertFalse(bodies.containsKey("/api/v2/torrents/stop"));
+    }
     @Test void completeVideoAndSidecarsBecomeReadyOnlyWhenLocallyVisible() throws Exception {
         downloader.connect(settings("qbt_test"));Release release=new Release();release.setId("a".repeat(40));release.setDownloadPath(root.toString());
         Files.writeString(root.resolve("episode.mkv"),"video");Files.writeString(root.resolve("episode.chs.ass"),"sub");

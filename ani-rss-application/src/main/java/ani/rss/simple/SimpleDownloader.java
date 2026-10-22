@@ -44,6 +44,8 @@ public class SimpleDownloader {
             if (!CATEGORY.equals(task.get("category").getAsString()) ||
                     !DownloadPaths.equivalent(task.get("save_path").getAsString(), remotePath))
                 throw new IOException("下载器中已有相同资源，但路径或分类不属于此资源库；请先处理现有任务");
+            String state=task.has("state")?task.get("state").getAsString().toLowerCase(Locale.ROOT):"";
+            if (state.startsWith("paused") || state.startsWith("stopped")) control(release.getId(),"start","resume");
             return; // An earlier request may have succeeded before its response was lost.
         }
         Files.createDirectories(path);
@@ -75,6 +77,26 @@ public class SimpleDownloader {
         release.setStatus("ready");
         release.setProgress(100);
         release.setError("");
+    }
+
+    /** Only suspend tasks whose category AND save path belong to this resource. Keep partial data. */
+    public void pause(Release release) throws IOException, InterruptedException {
+        String remote=DownloadPaths.destination(settings,Path.of(release.getDownloadPath()));
+        JsonArray tasks=JsonParser.parseString(request("/api/v2/torrents/info?hashes="+release.getId(),null)).getAsJsonArray();
+        for(JsonElement element:tasks) {
+            JsonObject task=element.getAsJsonObject();
+            if (!CATEGORY.equals(task.get("category").getAsString()) || !DownloadPaths.equivalent(task.get("save_path").getAsString(),remote))
+                throw new IOException("任务不属于此资源库，不能暂停");
+            control(release.getId(),"stop","pause");
+        }
+    }
+
+    private void control(String hash,String modern,String legacy) throws IOException, InterruptedException {
+        try { request("/api/v2/torrents/"+modern,Map.of("hashes",hash)); }
+        catch(IOException e) {
+            if (!e.getMessage().contains("HTTP 404")) throw e;
+            request("/api/v2/torrents/"+legacy,Map.of("hashes",hash));
+        }
     }
 
     private String request(String path, Map<String, String> form) throws IOException, InterruptedException {

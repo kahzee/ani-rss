@@ -28,6 +28,7 @@ class SimpleTrackingServiceTest {
         @Override public void checkFinished(Release release) {
             release.setVideoPath(paths.get(release.getId()).resolve("original.mkv").toString());release.setStatus("ready");release.setProgress(100);
         }
+        @Override public void pause(Release release) {tasks.get(release.getId()).addProperty("state","stoppedDL");}
     }
     private Release release(String id,String group,int ep) {Release r=new Release();r.setId(id);r.setGroup(group);r.setEpisode(ep);r.setChinese(true);r.setPublishedAt(1);r.setTitle("["+group+"] 测试番 - "+ep+" [CHS]");return r;}
 
@@ -66,5 +67,56 @@ class SimpleTrackingServiceTest {
             JsonObject task=new JsonObject();task.addProperty("progress",status.equals("stalledUP")?1:0);task.addProperty("state",status);tasks.add(task);
         }
         assertEquals(2,SimpleTrackingService.activeCount(tasks));
+    }
+
+    private SimpleStore configured() throws Exception {
+        SimpleStore store=new SimpleStore(root.resolve("state.json"));Settings s=store.state().getSettings();
+        s.setLibraryRoot(root.resolve("library").toString());s.setPlaybackRoot(root.resolve("playback").toString());
+        s.setDownloadHost("http://localhost");s.setCredential("fake");s.setTrustedGroups(List.of("首选","备选"));return store;
+    }
+    private Show show(SimpleStore store,String id) {Show s=new Show();s.setId(id);s.setTitle("番"+id);s.setFolder("番"+id);s.setLastCatalogAt(System.currentTimeMillis());store.state().getShows().add(s);return s;}
+
+    @Test void sharesSlotsAcrossShowsAndNewShowPrecedesMoreBackfill() throws Exception {
+        SimpleStore store=configured();store.state().getSettings().setSimultaneousDownloads(3);
+        for(String id:List.of("1","2","3","4")){Show s=show(store,id);s.getReleases().addAll(List.of(release(id+"a","备选",1),release(id+"b","备选",2)));}
+        Downloader dl=new Downloader();SimpleTrackingService service=new SimpleTrackingService(store,new Catalog(),dl);
+        service.tick();assertEquals(Set.of("1a","2a","3a"),dl.tasks.keySet());
+        dl.finish("1a");service.tick();assertTrue(dl.tasks.containsKey("4a"));assertFalse(dl.tasks.containsKey("1b"));
+    }
+
+    @Test void newShowGetsWatchableEpisodeBeforeOlderShowUpgrade() throws Exception {
+        SimpleStore store=configured();store.state().getSettings().setSimultaneousDownloads(1);
+        Show old=show(store,"1");old.getReleases().add(release("old","备选",1));
+        Downloader dl=new Downloader();SimpleTrackingService service=new SimpleTrackingService(store,new Catalog(),dl);
+        service.tick();dl.finish("old");service.tick();old.getReleases().add(release("upgrade","首选",1));
+        Show fresh=show(store,"2");fresh.getReleases().add(release("fresh","备选",1));service.tick();
+        assertTrue(dl.tasks.containsKey("fresh"));assertFalse(dl.tasks.containsKey("upgrade"));
+    }
+
+    @Test void stuckMetadataReleasesSlotAndTriesAnotherChineseVersion() throws Exception {
+        SimpleStore store=configured();store.state().getSettings().setSimultaneousDownloads(1);
+        Show s=show(store,"1");Release stuck=release("stuck","首选",1);s.getReleases().addAll(List.of(stuck,release("fallback","备选",1)));
+        Downloader dl=new Downloader();SimpleTrackingService service=new SimpleTrackingService(store,new Catalog(),dl);service.tick();
+        stuck.setLastProgressAt(System.currentTimeMillis()-11*60_000);dl.tasks.get("stuck").addProperty("state","metaDL");service.tick();
+        assertEquals("waiting",stuck.getStatus());assertTrue(stuck.getRetryAt()>System.currentTimeMillis());
+        assertEquals("stoppedDL",dl.tasks.get("stuck").get("state").getAsString());assertTrue(dl.tasks.containsKey("fallback"));
+        service.tick();assertEquals("waiting",stuck.getStatus());
+    }
+
+    @Test void submissionFailureBacksOffAndDoesNotBlockOtherShows() throws Exception {
+        SimpleStore store=configured();store.state().getSettings().setSimultaneousDownloads(1);
+        Show a=show(store,"1"),b=show(store,"2");Release broken=release("broken","首选",1);a.getReleases().add(broken);b.getReleases().add(release("good","首选",1));
+        Downloader dl=new Downloader(){@Override public void add(Release r,Path p) throws java.io.IOException {if(r.getId().equals("broken"))throw new java.io.IOException("foreign task");super.add(r,p);}};
+        new SimpleTrackingService(store,new Catalog(),dl).tick();
+        assertEquals("error",broken.getStatus());assertTrue(broken.getRetryAt()>System.currentTimeMillis());assertTrue(dl.tasks.containsKey("good"));
+        assertTrue(a.getMessage().contains("失败"));
+    }
+
+    @Test void waitingInQueueIsVisibleAndPausedTaskIsNotShownAsDownloading() throws Exception {
+        SimpleStore store=configured();store.state().getSettings().setSimultaneousDownloads(1);
+        Show a=show(store,"1"),b=show(store,"2");a.getReleases().add(release("a","首选",1));b.getReleases().add(release("b","首选",1));
+        Downloader dl=new Downloader();SimpleTrackingService service=new SimpleTrackingService(store,new Catalog(),dl);service.tick();
+        assertTrue(b.getMessage().contains("排队"));dl.tasks.get("a").addProperty("state","stoppedDL");service.tick();
+        assertEquals("paused",a.getReleases().getFirst().getStatus());assertTrue(dl.tasks.containsKey("b"));
     }
 }

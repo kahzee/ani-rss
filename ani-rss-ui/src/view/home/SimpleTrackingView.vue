@@ -65,7 +65,7 @@
           <div class="episode-heading"><strong>第 {{ episode.key }} 集</strong><el-tag v-if="detail.show.pinnedEpisodes.includes(episode.key)" type="warning" size="small">手动固定</el-tag><el-button v-if="detail.show.pinnedEpisodes.includes(episode.key)" link type="primary" @click="automatic(episode.key)">恢复自动</el-button></div>
           <div v-for="release in episode.releases" :key="release.id" class="release">
             <div class="release-info"><div><strong>{{ release.group }}</strong> <el-tag v-if="detail.show.selected[episode.key] === release.id" size="small" type="success">正式版本</el-tag> <el-tag v-if="!release.chinese" size="small" type="info">未明确标注中文</el-tag> <el-tag v-else-if="!allowed(release)" size="small" type="info">尚未认可</el-tag></div><p :title="release.title">{{ release.title }}</p><el-progress v-if="release.status==='downloading'" :percentage="Math.min(100, Math.round(release.progress))"/><p v-if="release.error" class="error">{{ release.error }}</p></div>
-            <div class="release-actions"><span>{{ statusLabel(release) }}</span><el-button v-if="release.status === 'ready' && detail.show.selected[episode.key] !== release.id" size="small" :disabled="!allowed(release)" :loading="working === release.id" @click="versionAction('choose', release)">切换到此版本</el-button><el-button v-else-if="['available','error'].includes(release.status)" size="small" :disabled="!allowed(release)" :loading="working === release.id" @click="versionAction('download', release)">下载备选</el-button></div>
+            <div class="release-actions"><span>{{ statusLabel(release) }}</span><el-button v-if="release.status === 'ready' && detail.show.selected[episode.key] !== release.id" size="small" :disabled="!allowed(release)" :loading="working === release.id" @click="versionAction('choose', release)">切换到此版本</el-button><el-button v-else-if="['available','error','waiting','paused'].includes(release.status)" size="small" :disabled="!allowed(release)" :loading="working === release.id" @click="versionAction('download', release)">{{ ['waiting','paused'].includes(release.status) ? '立即重试' : '下载备选' }}</el-button></div>
           </div>
         </div>
         <el-empty v-if="!episodes.length" description="正在寻找单集资源；找不到时会继续等待并自动检查。"/>
@@ -112,7 +112,7 @@ const episodes = computed(() => {
     return rank(a)-rank(b) || a.publishedAt-b.publishedAt
   })}))
 })
-const statusLabel = release => ({available:'可按需下载', submitting:'正在提交', downloading:`下载中 ${Math.round(release.progress)}%`, ready:'已在资源库', error:'等待重试'}[release.status] || release.status)
+const statusLabel = release => ({available:'可按需下载', submitting:'正在提交', downloading:`下载中 ${Math.round(release.progress)}%`, ready:'已在资源库', error:'下载失败，等待重试', waiting:'暂无进展，等待重试', paused:'已暂停'}[release.status] || release.status)
 
 async function load() {
   try {state.value = (await post('state')).data; if (detailOpen.value && detail.value) await loadDetail(detail.value.show.id); if(tab.value==='discover' && sourceMode.value==='mikan' && !searching.value) await discover(false)} finally {loading.value=false}

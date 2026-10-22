@@ -27,6 +27,8 @@ public class SimpleTrackingService {
     }
     private final AtomicBoolean running = new AtomicBoolean();
     private volatile boolean forceCatalog;
+    private static final long STALL_TIMEOUT = 10 * 60_000L;
+    private static final long RETRY_DELAY = 30 * 60_000L;
 
     public State state() { return store.snapshot(); }
 
@@ -152,13 +154,15 @@ public class SimpleTrackingService {
         State state = store.state();
         if (state.getShows().isEmpty()) return;
         Settings settings = state.getSettings();
+        Set<String> recoveryFailed=new HashSet<>();
         for (Show show : state.getShows()) {
             try { library.reconcile(settings, show); }
-            catch (Exception e) { show.setMessage("播放目录恢复待处理：" + brief(e)); store.save(); return; }
+            catch (Exception e) { show.setMessage("播放目录恢复待处理：" + brief(e)); recoveryFailed.add(show.getId()); }
         }
         boolean force = forceCatalog;
         forceCatalog = false;
         for (Show show : state.getShows()) {
+            if(recoveryFailed.contains(show.getId())) continue;
             if (show.isEnabled() && (force || System.currentTimeMillis() - show.getLastCatalogAt() >= 10 * 60_000L)) {
                 try {
                     List<Release> fresh = catalog.releases(show);
@@ -182,14 +186,36 @@ public class SimpleTrackingService {
             return;
         }
         JsonArray tasks = downloader.tasks();
-        int active = activeCount(tasks);
+        long now=System.currentTimeMillis();
         for (Show show : state.getShows()) {
+            if(recoveryFailed.contains(show.getId())) continue;
             for (Release release : show.getReleases()) {
                 if (release.getDownloadPath() == null) continue;
                 JsonObject task = findTask(tasks, release.getId());
                 if (task != null && !"ready".equals(release.getStatus())) {
-                    release.setStatus("downloading");
-                    release.setProgress(task.get("progress").getAsDouble() * 100);
+                    double progress=task.get("progress").getAsDouble()*100;
+                    if (progress>release.getProgress()) release.setLastProgressAt(now);
+                    if (release.getLastProgressAt()==0) {
+                        long activity=task.has("last_activity")?task.get("last_activity").getAsLong()*1000:now;
+                        release.setLastProgressAt(activity>0?Math.min(activity,now):now);
+                    }
+                    release.setProgress(progress);
+                    String taskState=task.get("state").getAsString().toLowerCase(Locale.ROOT);
+                    boolean stopped=taskState.startsWith("stopped") || taskState.startsWith("paused");
+                    if (stopped && progress<100) {
+                        if (!"waiting".equals(release.getStatus())) {release.setStatus("paused");release.setError("任务已暂停");}
+                    } else {
+                        release.setStatus("downloading");
+                        if (show.isEnabled() && progress<100 && !taskState.contains("checking") && !taskState.contains("moving")
+                                && !taskState.contains("queued") && now-release.getLastProgressAt()>=STALL_TIMEOUT) {
+                            try {
+                                downloader.pause(release);
+                                task.addProperty("state","stoppedDL");
+                                release.setStatus("waiting");release.setRetryAt(now+RETRY_DELAY);
+                                release.setError("10 分钟没有下载进展，已让出名额；30 分钟后重试，期间尝试其他中文字幕版本");
+                            } catch(Exception e) {release.setError("暂停无进展任务失败："+brief(e));}
+                        }
+                    }
                     if (release.getProgress() >= 100 && !task.get("state").getAsString().toLowerCase(Locale.ROOT).contains("checking")) {
                         try { downloader.checkFinished(release); }
                         catch (Exception e) { release.setError(brief(e)); }
@@ -213,18 +239,26 @@ public class SimpleTrackingService {
                     catch (Exception e) { best.setError("切换失败，原版本保留：" + brief(e)); }
                 }
             }
-            for (Release release : ReleasePolicy.plan(show, settings)) {
-                if (active >= settings.getSimultaneousDownloads()) break;
-                try { submit(show, release); active++; }
-                catch (Exception e) { release.setStatus("error"); release.setError(brief(e)); }
-                store.save();
-            }
-            long eligible = show.getReleases().stream().filter(r -> ReleasePolicy.allowed(r, show, settings)).count();
-            if (eligible == 0 && !show.getMessage().startsWith("资源检索失败"))
-                show.setMessage("等待认可字幕组的中文字幕资源；其他版本不会自动下载");
-            else if (!show.getMessage().startsWith("资源检索失败"))
-                show.setMessage("已就绪 " + show.getSelected().size() + " 集 · 自动补齐与追更中");
         }
+        // Poll/install every show first. Missing episodes across ALL shows precede upgrades;
+        // rotate by last submission so one back-catalog cannot starve newly followed shows.
+        int active=activeCount(tasks);
+        List<Show> eligibleShows=state.getShows().stream().filter(Show::isEnabled).filter(s->!recoveryFailed.contains(s.getId())).toList();
+        Set<String> attempted=new HashSet<>();
+        while(active<settings.getSimultaneousDownloads()) {
+            record Candidate(Show show,Release release) {}
+            Candidate next=eligibleShows.stream().flatMap(s->ReleasePolicy.plan(s,settings).stream().map(r->new Candidate(s,r)))
+                    .filter(c->!attempted.contains(c.release().getId()))
+                    .min(Comparator.comparingInt((Candidate c)->c.show().getSelected().containsKey(ReleasePolicy.episodeKey(c.release().getEpisode()))?1:0)
+                            .thenComparingLong(c->c.show().getLastQueuedAt())
+                            .thenComparingDouble(c->c.release().getEpisode())).orElse(null);
+            if(next==null) break;
+            attempted.add(next.release().getId());
+            try {submit(next.show(),next.release());active++;}
+            catch(Exception e) {next.release().setStatus("error");next.release().setRetryAt(now+RETRY_DELAY);next.release().setError(brief(e));}
+            store.save();
+        }
+        for(Show show:eligibleShows) updateMessage(show,settings);
         store.save();
     }
 
@@ -236,6 +270,24 @@ public class SimpleTrackingService {
         downloader.add(release, root);
         release.setStatus("downloading");
         release.setError("");
+        release.setLastProgressAt(System.currentTimeMillis());
+        release.setRetryAt(0);
+        show.setLastQueuedAt(System.currentTimeMillis());
+    }
+
+    private void updateMessage(Show show,Settings settings) {
+        if(show.getMessage().startsWith("资源检索失败")) return;
+        long active=show.getReleases().stream().filter(r->Set.of("downloading","submitting").contains(r.getStatus())).count();
+        long waiting=show.getReleases().stream().filter(r->"waiting".equals(r.getStatus())).count();
+        long failed=show.getReleases().stream().filter(r->"error".equals(r.getStatus())).count();
+        boolean allowed=show.getReleases().stream().anyMatch(r->ReleasePolicy.allowed(r,show,settings));
+        String prefix="已就绪 "+show.getSelected().size()+" 集 · ";
+        if(active>0) show.setMessage(prefix+active+" 个版本正在下载");
+        else if(!ReleasePolicy.plan(show,settings).isEmpty()) show.setMessage(prefix+"排队中，等待下载名额");
+        else if(waiting>0) show.setMessage(prefix+"资源暂无下载进展，已让出名额并定时重试");
+        else if(failed>0) show.setMessage(prefix+"部分版本下载失败，定时重试；详情可查看原因");
+        else if(!allowed) show.setMessage(show.getReleases().isEmpty()?"暂无可识别的单集资源，等待发布或资源收录":"暂无明确标注中文字幕的可用版本，等待更新");
+        else show.setMessage(prefix+"等待后续更新");
     }
 
     private void install(Show show, Release release, boolean manual) throws IOException {

@@ -74,7 +74,8 @@ public final class ReleasePolicy {
             String initial=settings.getInitialGroup();
             if (selected==null && initial!=null && !initial.isBlank())
                 order=Comparator.comparingInt((Release r)->initial.equalsIgnoreCase(r.getGroup())?0:1).thenComparing(preferred);
-            releases.stream().filter(r -> "available".equals(r.getStatus()) || "error".equals(r.getStatus()))
+            releases.stream().filter(r -> Set.of("available", "error", "waiting").contains(r.getStatus()))
+                    .filter(r -> r.getRetryAt() <= System.currentTimeMillis())
                     .filter(r -> better(r,selected,show,settings))
                     .min(order).ifPresent(result::add);
         });

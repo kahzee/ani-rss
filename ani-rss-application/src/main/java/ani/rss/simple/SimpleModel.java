@@ -55,6 +55,7 @@ public final class SimpleModel {
         // A manual selection stays pinned until explicitly returned to automatic mode.
         private Set<String> pinnedEpisodes = new HashSet<>();
         private long lastCatalogAt;
+        private long lastQueuedAt;
         private String message = "等待检查资源";
     }
 
@@ -73,6 +74,8 @@ public final class SimpleModel {
         private String videoPath;
         private List<String> subtitles = new ArrayList<>();
         private double progress;
+        private long lastProgressAt;
+        private long retryAt;
         private String error = "";
         // Snapshot of the paths installed into the playback directory, for recovery.
         private List<String> publishedFiles = new ArrayList<>();
