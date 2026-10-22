@@ -6,7 +6,7 @@
     </header>
 
     <el-alert v-if="!state.settings.credentialSaved" title="先连接一次下载器，设置资源库与极影视播放目录，之后直接点追番。" type="info" :closable="false" show-icon/>
-    <el-alert v-else-if="!state.settings.trustedGroups.length" title="还没有认可的字幕组。可以先关注番剧，再结合实际资源添加偏好；程序会等待，不会随便下载。" type="info" :closable="false" show-icon/>
+    <el-alert v-else-if="!state.settings.trustedGroups.length && !state.shows.some(show => show.preferredGroups.length)" title="还没有认可的字幕组。可以先关注番剧，再结合实际资源添加偏好；程序会等待，不会随便下载。" type="info" :closable="false" show-icon/>
 
     <div class="toolbar">
       <el-radio-group v-model="tab" @change="changeTab"><el-radio-button value="following">正在追 · {{ state.shows.length }}</el-radio-button><el-radio-button value="discover">找番</el-radio-button></el-radio-group>
