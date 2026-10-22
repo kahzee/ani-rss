@@ -6,7 +6,8 @@
     </header>
 
     <el-alert v-if="!state.settings.credentialSaved" title="先连接一次下载器，设置资源库与极影视播放目录，之后直接点追番。" type="info" :closable="false" show-icon/>
-    <el-alert v-else-if="!state.settings.trustedGroups.length && !state.shows.some(show => show.preferredGroups.length)" title="还没有认可的字幕组。可以先关注番剧，再结合实际资源添加偏好；程序会等待，不会随便下载。" type="info" :closable="false" show-icon/>
+    <el-alert v-else-if="!state.settings.trustedGroups.length && !state.settings.allowOtherChinese && !state.shows.some(show => show.preferredGroups.length)" title="还没有认可的字幕组。可以先关注番剧，再结合实际资源添加偏好；程序会等待，不会随便下载。" type="info" :closable="false" show-icon/>
+    <p v-else-if="state.settings.initialGroup" class="hint">先看 {{ state.settings.initialGroup }}，随后按偏好升级。{{ state.settings.preferSimplified ? '同等条件优先简体，繁体也可。' : '' }}{{ state.settings.allowOtherChinese ? '名单内暂无资源时，寻找其他明确标注中文字幕的版本。' : '' }}</p>
 
     <div class="toolbar">
       <el-radio-group v-model="tab" @change="changeTab"><el-radio-button value="following">正在追 · {{ state.shows.length }}</el-radio-button><el-radio-button value="discover">找番</el-radio-button></el-radio-group>
@@ -45,6 +46,9 @@
         <el-form-item label="下载器内的资源库路径（远程 / Docker 时填写）"><el-input v-model="settings.downloaderRoot" placeholder="例如 /downloads/ani-rss-simple；同机同路径时留空"/><div class="hint">对应上方同一文件夹。程序会自动换算两端路径，不再把 Windows 路径发给 NAS。</div></el-form-item>
         <el-form-item label="极影视正式播放目录"><el-input v-model="settings.playbackRoot"/><div class="hint">极影视只关联这里的番剧文件夹。两处目录都必须能被本程序访问，资源库与下载器的路径须一致。</div></el-form-item>
         <el-form-item label="认可的字幕组（从最喜欢到可接受，每行一个）"><el-input v-model="trustedText" type="textarea" :rows="4" placeholder="结合番剧详情里的字幕组名称填写；留空时等待，不自动下载。"/></el-form-item>
+        <el-form-item label="首次可看版本优先字幕组"><el-input v-model="settings.initialGroup" placeholder="例如 ANi；留空按上方偏好选择"/><div class="hint">先下载这个组的可接受版本，之后才补下载更偏好的版本。</div></el-form-item>
+        <el-form-item><el-switch v-model="settings.allowOtherChinese" active-text="名单内暂无资源时，允许其他中文字幕组"/></el-form-item>
+        <el-form-item><el-switch v-model="settings.preferSimplified" active-text="同等字幕组优先简体，繁体也接受"/></el-form-item>
         <el-form-item label="同时下载"><el-input-number v-model="settings.simultaneousDownloads" :min="1" :max="10"/></el-form-item>
       </el-form>
       <template #footer><el-button @click="test" :loading="testing" :disabled="!state.settings.credentialSaved">测试已保存的连接</el-button><el-button type="primary" @click="saveSettings" :loading="saving">保存配置</el-button></template>
@@ -94,7 +98,7 @@ const post = (name, body) => api.post(`api/simple/${name}`, body)
 const lines = text => [...new Set(text.split('\n').map(v => v.trim()).filter(Boolean))]
 const downloading = show => show.releases.filter(r => ['submitting','downloading'].includes(r.status))
 const isFollowed = id => state.value.shows.some(show => show.id === String(id))
-const allowed = release => release.chinese && detail.value.groups.some(g => g.toLowerCase() === release.group.toLowerCase())
+const allowed = release => release.chinese && (detail.value.groups.some(g => g.toLowerCase() === release.group.toLowerCase()) || state.value.settings.allowOtherChinese && !detail.value.show.preferredGroups.length)
 const discoveredGroups = computed(() => [...new Set(detail.value?.show.releases.map(r => r.group) || [])].sort())
 const episodes = computed(() => {
   const groups = new Map()

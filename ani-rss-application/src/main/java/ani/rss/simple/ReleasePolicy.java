@@ -29,6 +29,27 @@ public final class ReleasePolicy {
         return release.isChinese() && rank(release, groups) != Integer.MAX_VALUE;
     }
 
+    public static boolean allowed(Release release, Show show, Settings settings) {
+        return release.isChinese() && (rank(release, groups(show,settings)) != Integer.MAX_VALUE
+                || settings.isAllowOtherChinese() && show.getPreferredGroups().isEmpty());
+    }
+
+    private static int languageRank(Release release, Settings settings) {
+        if (!settings.isPreferSimplified()) return 0;
+        String title=Objects.toString(release.getTitle(), "");
+        if (Pattern.compile("简|簡|(?i)(?<![a-z])(?:chs|zh[-_]hans)(?![a-z])|(?i)[\\[【(](?:GB|SC)(?:[^a-z0-9]|$)").matcher(title).find()) return 0;
+        return 1;
+    }
+
+    private static Comparator<Release> quality(Show show, Settings settings) {
+        return Comparator.comparingInt((Release r)->rank(r,groups(show,settings)))
+                .thenComparingInt(r->languageRank(r,settings));
+    }
+
+    public static boolean better(Release candidate, Release current, Show show, Settings settings) {
+        return current==null || quality(show,settings).compare(candidate,current)<0;
+    }
+
     public static String episodeKey(double episode) {
         return java.math.BigDecimal.valueOf(episode).stripTrailingZeros().toPlainString();
     }
@@ -38,7 +59,7 @@ public final class ReleasePolicy {
         List<String> groups = groups(show, settings);
         Map<String, List<Release>> episodes = new TreeMap<>(Comparator.comparingDouble(Double::parseDouble));
         for (Release release : show.getReleases()) {
-            if (allowed(release, groups)) episodes.computeIfAbsent(episodeKey(release.getEpisode()), k -> new ArrayList<>()).add(release);
+            if (allowed(release, show, settings)) episodes.computeIfAbsent(episodeKey(release.getEpisode()), k -> new ArrayList<>()).add(release);
         }
         List<Release> result = new ArrayList<>();
         episodes.forEach((episode, releases) -> {
@@ -46,13 +67,15 @@ public final class ReleasePolicy {
             if (releases.stream().anyMatch(r -> Set.of("downloading", "submitting").contains(r.getStatus()))) return;
             Release selected = show.getReleases().stream()
                     .filter(r -> Objects.equals(r.getId(), show.getSelected().get(episode))).findFirst().orElse(null);
-            int current = selected == null ? Integer.MAX_VALUE : rank(selected, groups);
-            Comparator<Release> preferred = Comparator.comparingInt((Release r) -> rank(r, groups))
+            Comparator<Release> preferred = quality(show,settings)
                     .thenComparingLong(Release::getPublishedAt).thenComparing(Release::getId);
             Comparator<Release> order = selected == null && show.isFastest()
                     ? Comparator.comparingLong(Release::getPublishedAt).thenComparing(preferred) : preferred;
+            String initial=settings.getInitialGroup();
+            if (selected==null && initial!=null && !initial.isBlank())
+                order=Comparator.comparingInt((Release r)->initial.equalsIgnoreCase(r.getGroup())?0:1).thenComparing(preferred);
             releases.stream().filter(r -> "available".equals(r.getStatus()) || "error".equals(r.getStatus()))
-                    .filter(r -> selected == null || rank(r, groups) < current)
+                    .filter(r -> better(r,selected,show,settings))
                     .min(order).ifPresent(result::add);
         });
         return result;
@@ -61,7 +84,7 @@ public final class ReleasePolicy {
     public static Optional<Release> bestReady(Show show, Settings settings, String episode) {
         List<String> groups = groups(show, settings);
         return show.getReleases().stream().filter(r -> "ready".equals(r.getStatus()))
-                .filter(r -> episodeKey(r.getEpisode()).equals(episode) && allowed(r, groups))
-                .min(Comparator.comparingInt((Release r) -> rank(r, groups)).thenComparingLong(Release::getPublishedAt));
+                .filter(r -> episodeKey(r.getEpisode()).equals(episode) && allowed(r, show, settings))
+                .min(quality(show,settings).thenComparingLong(Release::getPublishedAt).thenComparing(Release::getId));
     }
 }

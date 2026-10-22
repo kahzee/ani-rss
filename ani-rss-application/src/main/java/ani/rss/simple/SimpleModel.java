@@ -17,8 +17,11 @@ public final class SimpleModel {
         private String username = "admin";
         private String credential = "";
         private boolean credentialSaved;
-        // Ordered from most preferred to least preferred. Empty means download nothing.
+        // Ordered quality preferences; unlisted groups require explicit Chinese fallback opt-in.
         private List<String> trustedGroups = new ArrayList<>();
+        private String initialGroup = "";
+        private boolean allowOtherChinese;
+        private boolean preferSimplified;
         private int simultaneousDownloads = 3;
 
         public Settings() {

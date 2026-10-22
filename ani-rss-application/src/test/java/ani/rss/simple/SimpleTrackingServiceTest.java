@@ -59,4 +59,12 @@ class SimpleTrackingServiceTest {
         service.tick();service.tick();assertEquals(1,downloader.tasks.size());assertTrue(downloader.tasks.containsKey("one"));
         downloader.finish("one");service.tick();assertEquals(2,downloader.tasks.size());assertTrue(downloader.tasks.containsKey("two"));
     }
+
+    @Test void pausedTasksDoNotOccupyDownloadSlots() {
+        JsonArray tasks=new JsonArray();
+        for(String status:List.of("pausedDL","stoppedDL","downloading","metaDL","stalledUP")) {
+            JsonObject task=new JsonObject();task.addProperty("progress",status.equals("stalledUP")?1:0);task.addProperty("state",status);tasks.add(task);
+        }
+        assertEquals(2,SimpleTrackingService.activeCount(tasks));
+    }
 }

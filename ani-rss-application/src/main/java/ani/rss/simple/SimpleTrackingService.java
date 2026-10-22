@@ -48,6 +48,7 @@ public class SimpleTrackingService {
         if (incoming.getSimultaneousDownloads() < 1 || incoming.getSimultaneousDownloads() > 10)
             throw new IllegalArgumentException("同时下载数量应为 1 到 10");
         incoming.setTrustedGroups(cleanGroups(incoming.getTrustedGroups()));
+        incoming.setInitialGroup(Objects.toString(incoming.getInitialGroup(), "").trim());
         incoming.setLibraryRoot(resources.toString());
         incoming.setPlaybackRoot(playback.toString());
         incoming.setCredentialSaved(false);
@@ -98,7 +99,7 @@ public class SimpleTrackingService {
     public synchronized void choose(VersionRequest request) throws Exception {
         Show show = show(request.getShowId());
         Release release = release(show, request.getReleaseId());
-        if (!ReleasePolicy.allowed(release, ReleasePolicy.groups(show, store.state().getSettings())))
+        if (!ReleasePolicy.allowed(release, show, store.state().getSettings()))
             throw new IllegalArgumentException("仅可选用认可字幕组且明确标注中文字幕的版本");
         if (!"ready".equals(release.getStatus()))
             throw new IllegalArgumentException("请先下载此版本，完成后再切换");
@@ -111,7 +112,7 @@ public class SimpleTrackingService {
         Show show = show(request.getShowId());
         Release release = release(show, request.getReleaseId());
         Settings settings = store.state().getSettings();
-        if (!ReleasePolicy.allowed(release, ReleasePolicy.groups(show, settings)))
+        if (!ReleasePolicy.allowed(release, show, settings))
             throw new IllegalArgumentException("先认可该字幕组，并确认资源有中文字幕");
         if (Set.of("ready", "downloading", "submitting").contains(release.getStatus())) return;
         downloader.connect(settings);
@@ -198,14 +199,14 @@ public class SimpleTrackingService {
             }
             if (!show.isEnabled()) { show.setMessage("已暂停自动追番，资源和播放文件均保留"); continue; }
             List<String> groups = ReleasePolicy.groups(show, settings);
-            if (groups.isEmpty()) { show.setMessage("等待认可字幕组：在基础配置或本番偏好中添加名单"); continue; }
+            if (groups.isEmpty() && !settings.isAllowOtherChinese()) { show.setMessage("等待认可字幕组：在基础配置或本番偏好中添加名单"); continue; }
             Set<String> episodes = new LinkedHashSet<>();
             show.getReleases().forEach(r -> episodes.add(ReleasePolicy.episodeKey(r.getEpisode())));
             for (String episode : episodes) {
                 if (show.getPinnedEpisodes().contains(episode)) continue;
                 Release best = ReleasePolicy.bestReady(show, settings, episode).orElse(null);
                 Release current = show.getReleases().stream().filter(r -> Objects.equals(r.getId(), show.getSelected().get(episode))).findFirst().orElse(null);
-                if (best != null && (current == null || ReleasePolicy.rank(best, groups) < ReleasePolicy.rank(current, groups))) {
+                if (best != null && ReleasePolicy.better(best, current, show, settings)) {
                     try { install(show, best, false); store.save(); }
                     catch (Exception e) { best.setError("切换失败，原版本保留：" + brief(e)); }
                 }
@@ -216,7 +217,7 @@ public class SimpleTrackingService {
                 catch (Exception e) { release.setStatus("error"); release.setError(brief(e)); }
                 store.save();
             }
-            long eligible = show.getReleases().stream().filter(r -> ReleasePolicy.allowed(r, groups)).count();
+            long eligible = show.getReleases().stream().filter(r -> ReleasePolicy.allowed(r, show, settings)).count();
             if (eligible == 0 && !show.getMessage().startsWith("资源检索失败"))
                 show.setMessage("等待认可字幕组的中文字幕资源；其他版本不会自动下载");
             else if (!show.getMessage().startsWith("资源检索失败"))
@@ -283,9 +284,13 @@ public class SimpleTrackingService {
         for (JsonElement element : tasks) if (element.getAsJsonObject().get("hash").getAsString().equalsIgnoreCase(hash)) return element.getAsJsonObject();
         return null;
     }
-    private static int activeCount(JsonArray tasks) {
+    static int activeCount(JsonArray tasks) {
         int count = 0;
-        for (JsonElement element : tasks) if (element.getAsJsonObject().get("progress").getAsDouble() < 1) count++;
+        for (JsonElement element : tasks) {
+            JsonObject task=element.getAsJsonObject();
+            String status=task.has("state")?task.get("state").getAsString().toLowerCase(Locale.ROOT):"";
+            if (task.get("progress").getAsDouble() < 1 && !status.startsWith("paused") && !status.startsWith("stopped")) count++;
+        }
         return count;
     }
 }
