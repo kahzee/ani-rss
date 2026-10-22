@@ -33,11 +33,13 @@ public class SimpleTrackingService {
         Settings old = store.state().getSettings();
         Path resources = absolute(incoming.getLibraryRoot());
         Path playback = absolute(incoming.getPlaybackRoot());
+        incoming.setDownloaderRoot(DownloadPaths.normalizeRemote(incoming.getDownloaderRoot()));
         if (resources.startsWith(playback) || playback.startsWith(resources))
             throw new IllegalArgumentException("资源库与正式播放目录必须分开，不能互相包含");
         boolean downloaded = store.state().getShows().stream().flatMap(s -> s.getReleases().stream())
                 .anyMatch(r -> r.getDownloadPath() != null);
-        if (downloaded && (!resources.equals(absolute(old.getLibraryRoot())) || !playback.equals(absolute(old.getPlaybackRoot()))))
+        if (downloaded && (!resources.equals(absolute(old.getLibraryRoot())) || !playback.equals(absolute(old.getPlaybackRoot()))
+                || !Objects.equals(incoming.getDownloaderRoot(), old.getDownloaderRoot())))
             throw new IllegalArgumentException("已有资源时不能直接修改根目录，请先迁移数据和下载器路径");
         URI uri = URI.create(incoming.getDownloadHost());
         if (!Set.of("http", "https").contains(String.valueOf(uri.getScheme())) || uri.getHost() == null

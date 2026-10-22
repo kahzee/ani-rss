@@ -25,7 +25,14 @@ class SimpleDownloaderTest {
         downloader=new SimpleDownloader();
     }
     @AfterEach void teardown(){server.stop(0);}
-    private Settings settings(String credential){Settings s=new Settings();s.setDownloadHost("http://127.0.0.1:"+server.getAddress().getPort());s.setCredential(credential);s.setUsername("admin");return s;}
+    private Settings settings(String credential){Settings s=new Settings();s.setLibraryRoot(root.toString());s.setDownloadHost("http://127.0.0.1:"+server.getAddress().getPort());s.setCredential(credential);s.setUsername("admin");return s;}
+
+    @Test void remoteNasReceivesItsOwnPathNotTheLocalMount() throws Exception {
+        Settings settings=settings("qbt_test");settings.setDownloaderRoot("/downloads/simple");downloader.connect(settings);
+        Release release=new Release();release.setId("a".repeat(40));release.setMagnet("magnet:?xt=urn:btih:"+release.getId());
+        downloader.add(release,root.resolve("123/hash"));
+        assertTrue(bodies.get("/api/v2/torrents/add").contains("savepath=%2Fdownloads%2Fsimple%2F123%2Fhash"));
+    }
 
     @Test void isolatesTasksAndSupportsApiKeys() throws Exception {
         downloader.connect(settings("qbt_test"));Release release=new Release();release.setId("a".repeat(40));release.setMagnet("magnet:?xt=urn:btih:"+release.getId());downloader.add(release,root.resolve("library"));
@@ -33,6 +40,12 @@ class SimpleDownloaderTest {
         assertTrue(body.contains("category=ani-rss-simple"));assertTrue(body.contains("autoTMM=false"));assertTrue(body.contains("paused=false"));assertFalse(body.contains("rename="));
     }
     @Test void traditionalPasswordLoginIsSupported() throws Exception {downloader.connect(settings("password & space"));assertTrue(bodies.get("/api/v2/auth/login").contains("password=password+%26+space"));}
+    @Test void directTorrentMetadataLinksArePassedToTheRealClient() throws Exception {
+        downloader.connect(settings("qbt_test"));Release release=new Release();release.setId("b".repeat(40));
+        release.setTorrentUrl("https://example.test/sample.torrent");release.setMagnet("magnet:?xt=urn:btih:"+release.getId());
+        downloader.add(release,root.resolve("123/hash"));
+        assertTrue(bodies.get("/api/v2/torrents/add").contains("urls=https%3A%2F%2Fexample.test%2Fsample.torrent"));
+    }
     @Test void existingForeignTaskIsNeverMovedOrRelabeled() throws Exception {
         downloader.connect(settings("qbt_test"));replies.put("/api/v2/torrents/info","[{\"category\":\"personal\",\"save_path\":\"/private\"}]");
         Release release=new Release();release.setId("a".repeat(40));release.setMagnet("magnet:?xt=urn:btih:"+release.getId());

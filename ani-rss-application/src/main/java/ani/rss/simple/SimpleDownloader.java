@@ -37,17 +37,20 @@ public class SimpleDownloader {
     }
 
     public void add(Release release, Path path) throws IOException, InterruptedException {
+        String remotePath = DownloadPaths.destination(settings, path);
         JsonArray existing = JsonParser.parseString(request("/api/v2/torrents/info?hashes=" + release.getId(), null)).getAsJsonArray();
         for (JsonElement element : existing) {
             JsonObject task = element.getAsJsonObject();
             if (!CATEGORY.equals(task.get("category").getAsString()) ||
-                    !Path.of(task.get("save_path").getAsString()).toAbsolutePath().normalize().equals(path.toAbsolutePath().normalize()))
+                    !DownloadPaths.equivalent(task.get("save_path").getAsString(), remotePath))
                 throw new IOException("下载器中已有相同资源，但路径或分类不属于此资源库；请先处理现有任务");
             return; // An earlier request may have succeeded before its response was lost.
         }
         Files.createDirectories(path);
+        String source = release.getTorrentUrl();
+        if (source == null || source.isBlank()) source = release.getMagnet();
         request("/api/v2/torrents/add", Map.of(
-                "urls", release.getMagnet(), "savepath", path.toString(), "category", CATEGORY,
+                "urls", source, "savepath", remotePath, "category", CATEGORY,
                 "autoTMM", "false", "paused", "false", "stopped", "false", "contentLayout", "Original"));
     }
 

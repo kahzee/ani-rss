@@ -11,6 +11,8 @@ public final class SimpleModel {
     public static class Settings {
         private String libraryRoot = "/Media/追番资源";
         private String playbackRoot = "/Media/番剧";
+        // Optional path as seen by a remote/containerized downloader. Local access still uses libraryRoot.
+        private String downloaderRoot = "";
         private String downloadHost = "";
         private String username = "admin";
         private String credential = "";
@@ -60,6 +62,7 @@ public final class SimpleModel {
         private String group;
         private double episode;
         private String magnet;
+        private String torrentUrl;
         private long publishedAt;
         private boolean chinese;
         private String status = "available";

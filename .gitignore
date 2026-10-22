@@ -60,3 +60,4 @@ ani-rss.jar
 media/
 .env
 simple-tracking.json*
+__pycache__/

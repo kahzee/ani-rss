@@ -33,7 +33,8 @@
       <el-form label-position="top" :model="settings">
         <el-form-item label="qBittorrent WebUI 地址"><el-input v-model="settings.downloadHost" placeholder="http://极空间地址:端口"/></el-form-item>
         <div class="form-pair"><el-form-item label="用户名"><el-input v-model="settings.username" autocomplete="username"/></el-form-item><el-form-item label="密码或 API 密钥"><el-input v-model="settings.credential" type="password" show-password autocomplete="new-password" :placeholder="state.settings.credentialSaved ? '留空保留已有凭据' : '填写密码或 qbt_ 开头的密钥'"/></el-form-item></div>
-        <el-form-item label="资源库目录"><el-input v-model="settings.libraryRoot"/><div class="hint">下载的原始版本和被替换的版本保存在这里。</div></el-form-item>
+        <el-form-item label="本机可访问的资源库目录"><el-input v-model="settings.libraryRoot"/><div class="hint">下载的原始版本和被替换的版本保存在这里。远程 NAS 可填写映射盘路径。</div></el-form-item>
+        <el-form-item label="下载器内的资源库路径（远程 / Docker 时填写）"><el-input v-model="settings.downloaderRoot" placeholder="例如 /downloads/ani-rss-simple；同机同路径时留空"/><div class="hint">对应上方同一文件夹。程序会自动换算两端路径，不再把 Windows 路径发给 NAS。</div></el-form-item>
         <el-form-item label="极影视正式播放目录"><el-input v-model="settings.playbackRoot"/><div class="hint">极影视只关联这里的番剧文件夹。两处目录都必须能被本程序访问，资源库与下载器的路径须一致。</div></el-form-item>
         <el-form-item label="认可的字幕组（从最喜欢到可接受，每行一个）"><el-input v-model="trustedText" type="textarea" :rows="4" placeholder="结合番剧详情里的字幕组名称填写；留空时等待，不自动下载。"/></el-form-item>
         <el-form-item label="同时下载"><el-input-number v-model="settings.simultaneousDownloads" :min="1" :max="10"/></el-form-item>

@@ -8,12 +8,18 @@ import ani.rss.util.basic.HttpReq;
 import ani.rss.util.other.RenameUtil;
 import com.google.gson.*;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Value;
 import java.util.*;
 import java.util.regex.*;
+import java.net.URI;
 
 @Component
 public class SimpleCatalog {
-    private static final String HOST = "https://api.animes.garden";
+    @Value("${simple.catalog-url:https://api.animes.garden}")
+    private String host = "https://api.animes.garden";
+
+    public SimpleCatalog() {}
+    SimpleCatalog(String host) { this.host = host; }
     private static final Pattern HASH = Pattern.compile("(?i)btih:([a-f0-9]{40}|[a-z2-7]{32})(?:&|$)");
     // Batch titles must not be silently assigned to the first episode.
     private static final Pattern BATCH = Pattern.compile("合集|全集|(?i)(?<![a-z])(?:complete|batch)(?![a-z])|[\\[【]\\d{1,3}\\s*[-~～]\\s*\\d{1,3}(?:v\\d)?[\\]】 ]|(?i)S\\d{1,2}E\\d{1,3}\\s*[-~～]\\s*(?:S\\d{1,2})?E?\\d{1,3}(?!\\d)");
@@ -40,12 +46,13 @@ public class SimpleCatalog {
     public List<Release> releases(Show show) {
         List<Release> result = new ArrayList<>();
         Ani parser = DefaultAniFactory.create().setId(show.getId()).setTitle(show.getTitle())
+                .setBgmUrl("https://bgm.tv/subject/" + show.getId())
                 .setSeason(show.getSeason()).setCustomEpisode(false)
                 .setCustomRenameTemplateEnable(true).setCustomRenameTemplate("${title} S${seasonFormat}E${episodeFormat}");
         int page = 1;
         while (page <= 500) {
             int current = page;
-            List<AnimeGarden.Item> resources = HttpReq.get(HOST + "/resources")
+            List<AnimeGarden.Item> resources = HttpReq.get(host + "/resources")
                     .form("subject", show.getId()).form("page", current).form("pageSize", 100).form("duplicate", false)
                     .timeout(20000).thenFunction(response -> {
                         HttpReq.assertStatus(response);
@@ -65,6 +72,14 @@ public class SimpleCatalog {
                 release.setGroup(resource.getFansub().getName());
                 release.setEpisode(item.getEpisode());
                 release.setMagnet(resource.getMagnet());
+                if (resource.getHref() != null) {
+                    try {
+                        URI source = URI.create(resource.getHref());
+                        if (Set.of("http", "https").contains(source.getScheme()) && source.getHost() != null
+                                && source.getUserInfo() == null && source.getPath().toLowerCase(Locale.ROOT).endsWith(".torrent"))
+                            release.setTorrentUrl(source.toString());
+                    } catch (IllegalArgumentException ignored) { /* Detail-page links continue to use the magnet. */ }
+                }
                 release.setPublishedAt(resource.getCreatedAt() == null ? Long.MAX_VALUE : resource.getCreatedAt().getTime());
                 release.setChinese(ReleasePolicy.hasChinese(resource.getTitle()));
                 result.add(release);
