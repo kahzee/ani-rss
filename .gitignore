@@ -51,3 +51,12 @@ logs
 ani-rss-update.exe
 *.versionsBackup
 .pnpm-store
+
+# Local runtime, release bundles and user data
+.run/
+.runtime/
+release/
+ani-rss.jar
+media/
+.env
+simple-tracking.json*

@@ -3,38 +3,41 @@
     <aside class="app-nav">
       <div class="app-brand">
         <img class="app-logo" src="/icon.svg" alt="ANI-RSS">
-        <span>ANI-RSS</span>
+        <span>极简追番</span>
       </div>
       <el-menu
           :default-active="route.path"
           :ellipsis="false"
           class="app-menu"
           router>
-        <el-menu-item index="/home">
+        <el-menu-item index="/follow">
+          <el-icon><Collection/></el-icon><span>追番</span>
+        </el-menu-item>
+        <el-menu-item v-if="route.path !== '/follow'" index="/home">
           <el-icon>
             <House/>
           </el-icon>
           <span>首页</span>
         </el-menu-item>
-        <el-menu-item index="/subscriptions">
+        <el-menu-item v-if="route.path !== '/follow'" index="/subscriptions">
           <el-icon>
             <Collection/>
           </el-icon>
           <span>订阅</span>
         </el-menu-item>
-        <el-menu-item index="/downloads">
+        <el-menu-item v-if="route.path !== '/follow'" index="/downloads">
           <el-icon>
             <Download/>
           </el-icon>
           <span>下载</span>
         </el-menu-item>
-        <el-menu-item index="/logs">
+        <el-menu-item v-if="route.path !== '/follow'" index="/logs">
           <el-icon>
             <Tickets/>
           </el-icon>
           <span>日志</span>
         </el-menu-item>
-        <el-menu-item index="/settings">
+        <el-menu-item v-if="route.path !== '/follow'" index="/settings">
           <el-icon>
             <Setting/>
           </el-icon>
