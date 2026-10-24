@@ -40,7 +40,6 @@ public class LoginController extends BaseController {
         String ip = AuthUtil.getIp();
 
         if (username.equals(myUsername) && password.equals(myPassword)) {
-            AuthUtil.resetSessionId();
             clearLimitLoginAttempts();
             log.info("登录成功 {} ip: {}", username, ip);
             String s = AuthUtil.getToken();

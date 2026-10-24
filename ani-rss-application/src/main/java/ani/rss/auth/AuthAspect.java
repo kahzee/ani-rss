@@ -18,13 +18,17 @@ public class AuthAspect {
     public void before(JoinPoint joinPoint, Auth auth) {
         HttpServletRequest request = Global.REQUEST.get();
         if (AuthUtil.test(request, auth)) {
+            String renewed=AuthUtil.renewToken(request.getHeader("Authorization"));
+            if(!renewed.isEmpty() && Global.RESPONSE.get()!=null) {
+                Global.RESPONSE.get().setHeader("X-Renewed-Authorization",renewed);
+            }
             // 鉴权通过
             return;
         }
 
         throw new ResultException(
                 Result.error(r ->
-                        r.setCode(ResultCode.HTTP_FORBIDDEN)
+                        r.setCode(401)
                                 .setMessage("登录已失效")
                 )
         );
