@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import tempfile
+import os
 
 spec = importlib.util.spec_from_file_location("exporter", Path(__file__).with_name("export-container-state.py"))
 exporter = importlib.util.module_from_spec(spec)
@@ -31,6 +33,20 @@ class ContainerStateTest(unittest.TestCase):
     def test_preserves_unicode_and_uses_java_name_uuid_scope(self):
         self.assertEqual("番剧/第一集.mkv", exporter.relative("/媒体/番剧/第一集.mkv", "/媒体"))
         self.assertEqual("90015098-3cd2-3fb0-9696-3f7d28e17f72", exporter.scope("abc"))
+
+    @unittest.skipUnless(os.name == "nt", "Windows long path behavior")
+    def test_validates_existing_torrent_files_longer_than_max_path(self):
+        with tempfile.TemporaryDirectory() as root:
+            name = str(Path(root) / ("a" * 100) / ("b" * 100) / ("c" * 50 + ".mkv"))
+            target = exporter.local_file(name)
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"fixture")
+            self.assertTrue(exporter.local_file(name).is_file())
+            self.assertEqual(7, exporter.local_file(name).stat().st_size)
+            target.unlink()
+            target.parent.rmdir()
+            target.parent.parent.rmdir()
+            target.parent.parent.parent.rmdir()
 
 
 if __name__ == "__main__": unittest.main()

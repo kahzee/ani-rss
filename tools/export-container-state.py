@@ -8,9 +8,19 @@ import argparse
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path, PureWindowsPath, PurePosixPath
 import shutil
 import uuid
+
+
+def local_file(value):
+    """Python on Windows needs extended paths for some long torrent filenames."""
+    if os.name == "nt":
+        value = os.path.abspath(value)
+        if not value.startswith("\\\\?\\"):
+            value = "\\\\?\\UNC\\" + value[2:] if value.startswith("\\\\") else "\\\\?\\" + value
+    return Path(value)
 
 
 def relative(value, root):
@@ -69,11 +79,11 @@ def main():
         for release in show["releases"]:
             if release.get("status") == "ready":
                 for name in [release.get("videoPath")] + release.get("subtitles", []):
-                    if not name or not Path(name).is_file() or Path(name).stat().st_size == 0:
+                    if not name or not local_file(name).is_file() or local_file(name).stat().st_size == 0:
                         raise ValueError("A ready resource is missing or empty")
                 resources += 1
             if release["id"] in selected:
-                if not release.get("publishedFiles") or any(not Path(p).is_file() for p in release["publishedFiles"]):
+                if not release.get("publishedFiles") or any(not local_file(p).is_file() for p in release["publishedFiles"]):
                     raise ValueError("A selected playback copy is missing; recover before export")
     summary = {"shows": len(state["shows"]), "readyVersions": resources,
                "publishedEpisodes": sum(len(s.get("selected", {})) for s in state["shows"]),
@@ -97,8 +107,8 @@ def main():
                     (destination / name).chmod(0o600)
             if state_file.read_bytes() != raw:
                 raise ValueError("Source changed; exported folder is incomplete and must not be deployed")
-            (destination / "export-summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
             summary["written"] = True
+            (destination / "export-summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
         except Exception:
             # Leave source and partial destination untouched for review, never recursively delete.
             raise
