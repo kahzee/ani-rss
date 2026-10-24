@@ -59,30 +59,8 @@ export default defineConfig({
                 bgmOauthCallback: path.resolve(dirname, 'bgm-oauth-callback.html')
             },
             output: {
-                codeSplitting: {
-                    groups: [
-                        {
-                            name: 'vue',
-                            test: /node_modules[\\/](vue|@vueuse[\\/]core|@vicons[\\/]fa)/,
-                        },
-                        {
-                            name: 'utils',
-                            test: /node_modules[\\/](js-md5|markdown-it|markdown-it-github-alerts)/,
-                        },
-                        {
-                            name: 'element-icon',
-                            test: /node_modules[\\/](@element-plus[\\/]icons-vue)/,
-                        },
-                        {
-                            name: 'movi-player',
-                            test: /node_modules[\\/]movi-player/,
-                        },
-                        {
-                            name: 'element-plus',
-                            test: /node_modules[\\/]element-plus/
-                        }
-                    ]
-                },
+                // Keep Vue and UI dependencies in the bundler's dependency order.
+                // Forced vendor groups can create cross-chunk initialization cycles.
                 chunkFileNames: () => {
                     return `assets/[name]-[hash].js`;
                 }
@@ -97,3 +75,4 @@ export default defineConfig({
         }
     }
 })
+
