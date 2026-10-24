@@ -12,4 +12,9 @@ services:
       TZ: Asia/Shanghai
     volumes:
       - ./config:/config
-      - ${MEDIA_ROOT:-./media}:/Media
+      - type: bind
+        source: ${RESOURCE_ROOT:?Set RESOURCE_ROOT to the existing resource library on the NAS}
+        target: /resources
+      - type: bind
+        source: ${PLAYBACK_ROOT:?Set PLAYBACK_ROOT to the fixed playback parent on the NAS}
+        target: /playback

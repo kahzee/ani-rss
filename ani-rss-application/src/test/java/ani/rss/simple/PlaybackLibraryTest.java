@@ -142,4 +142,74 @@ class PlaybackLibraryTest {
         PlaybackLibrary restored=new PlaybackLibrary(root.resolve("fresh-metadata"));
         assertThrows(IOException.class,()->restored.reconcile(settings,show));assertEquals("personal replacement",Files.readString(playing));
     }
+
+    @Test void canonicalizesDuplicateNumbersPreservingOriginalsAndRestartState() throws Exception {
+        Settings settings=settings();settings.setTrustedGroups(List.of("桜都字幕组","ANi"));Show show=show();show.setSeason(3);
+        Release absolute=resource("absolute","mp4","ani original"),local=resource("local","mkv","preferred original");
+        absolute.setEpisode(25);absolute.setGroup("ANi");local.setGroup("桜都字幕组");
+        show.getReleases().addAll(List.of(absolute,local));
+        absolute.setPublishedFiles(library.publish(settings,show,absolute));local.setPublishedFiles(library.publish(settings,show,local));
+        Path obsolete=Path.of(absolute.getPublishedFiles().getFirst());
+        show.getSelected().put("25",absolute.getId());show.getSelected().put("1",local.getId());
+        show.getEpisodeNumbers().putAll(Map.of("25",1d,"1",1d));EpisodeNumbers.apply(show);
+        // Simulate restart after the merged manifest committed but before publication began.
+        Path canonical=library.metadataDirectory(settings,show).resolve(".ani-rss-E1.json");
+        PlaybackLibrary.Manifest merged=GsonStatic.fromJson(Files.readString(canonical),PlaybackLibrary.Manifest.class);
+        merged.files.add(obsolete.getFileName().toString());Files.writeString(canonical,GsonStatic.toJson(merged));
+        library.reconcile(settings,show);
+        assertEquals(Map.of("1","local"),show.getSelected());assertFalse(Files.exists(obsolete));
+        assertEquals("preferred original",Files.readString(Path.of(local.getPublishedFiles().getFirst())));
+        assertEquals("ani original",Files.readString(Path.of(absolute.getVideoPath())));
+        assertEquals("preferred original",Files.readString(Path.of(local.getVideoPath())));
+        new PlaybackLibrary(root.resolve("metadata")).reconcile(settings,show);
+        assertEquals(Map.of("1","local"),show.getSelected());assertFalse(Files.exists(obsolete));
+        try(var files=Files.list(library.metadataDirectory(settings,show))) {assertEquals(1,files.count());}
+    }
+
+    @Test void canonicalizationRefusesToRemoveModifiedPlaybackCopy() throws Exception {
+        Settings settings=settings();Show show=show();show.setSeason(3);Release absolute=resource("absolute","mp4","original");
+        absolute.setEpisode(25);show.getReleases().add(absolute);absolute.setPublishedFiles(library.publish(settings,show,absolute));
+        Path playing=Path.of(absolute.getPublishedFiles().getFirst());Files.writeString(playing,"personal replacement");
+        show.getEpisodeNumbers().put("25",1d);EpisodeNumbers.apply(show);
+        assertThrows(IOException.class,()->library.reconcile(settings,show));
+        assertEquals("personal replacement",Files.readString(playing));assertEquals("original",Files.readString(Path.of(absolute.getVideoPath())));
+    }
+
+    @Test void canonicalizationKeepsManualChoiceAndRejectsConflictingManualChoices() throws Exception {
+        Settings settings=settings();settings.setTrustedGroups(List.of("桜都字幕组","ANi"));Show show=show();show.setSeason(2);
+        Release absolute=resource("absolute","mp4","manual"),local=resource("local","mkv","preferred");
+        absolute.setEpisode(13);absolute.setGroup("ANi");local.setGroup("桜都字幕组");show.getReleases().addAll(List.of(absolute,local));
+        absolute.setPublishedFiles(library.publish(settings,show,absolute,true));local.setPublishedFiles(library.publish(settings,show,local,true));
+        show.getEpisodeNumbers().putAll(Map.of("13",1d,"1",1d));EpisodeNumbers.apply(show);
+        assertThrows(IOException.class,()->library.reconcile(settings,show));
+        assertTrue(Files.exists(Path.of(absolute.getPublishedFiles().getFirst())));assertTrue(Files.exists(Path.of(local.getPublishedFiles().getFirst())));
+        Path canonical=library.metadataDirectory(settings,show).resolve(".ani-rss-E1.json");
+        PlaybackLibrary.Manifest m=GsonStatic.fromJson(Files.readString(canonical),PlaybackLibrary.Manifest.class);m.manual=false;
+        Files.writeString(canonical,GsonStatic.toJson(m));library.reconcile(settings,show);
+        assertEquals("absolute",show.getSelected().get("1"));assertTrue(show.getPinnedEpisodes().contains("1"));
+    }
+
+    @Test void interruptedStagingRecoversWhenPlannedBackupsHaveNotMovedYet() throws Exception {
+        Path directory=root.resolve("season");Files.createDirectories(directory);Files.writeString(directory.resolve("old.mkv"),"old");
+        Files.writeString(directory.resolve("partial.pending"),"partial");
+        PlaybackLibrary.Transaction tx=new PlaybackLibrary.Transaction();tx.manifestName=".ani-rss-E1.json";
+        tx.backups.put("old.mkv","old.backup");tx.backups.put("new.mp4","");tx.staged.put("new.mp4","partial.pending");
+        Path journal=directory.resolve(".ani-rss-E1.transaction.json");Files.writeString(journal,GsonStatic.toJson(tx));
+        library.recover(directory,journal);assertEquals("old",Files.readString(directory.resolve("old.mkv")));
+        assertFalse(Files.exists(directory.resolve("partial.pending")));assertFalse(Files.exists(journal));
+    }
+
+    @Test void recoveryRestoresAlreadyRenamedBackupBeforeAnyNewInstall() throws Exception {
+        Path directory=root.resolve("season");Files.createDirectories(directory);Files.writeString(directory.resolve("old.backup"),"old");
+        PlaybackLibrary.Transaction tx=new PlaybackLibrary.Transaction();tx.manifestName=".ani-rss-E1.json";tx.oldManifest="{}";tx.backups.put("old.mkv","old.backup");
+        Path journal=directory.resolve(".ani-rss-E1.transaction.json");Files.writeString(journal,GsonStatic.toJson(tx));
+        library.recover(directory,journal);assertEquals("old",Files.readString(directory.resolve("old.mkv")));assertFalse(Files.exists(journal));
+    }
+
+    @Test void missingBackupAndTargetStopRecoveryWithoutDiscardingJournal() throws Exception {
+        Path directory=root.resolve("season");Files.createDirectories(directory);
+        PlaybackLibrary.Transaction tx=new PlaybackLibrary.Transaction();tx.manifestName=".ani-rss-E1.json";tx.backups.put("old.mkv","old.backup");
+        Path journal=directory.resolve(".ani-rss-E1.transaction.json");Files.writeString(journal,GsonStatic.toJson(tx));
+        assertThrows(IOException.class,()->library.recover(directory,journal));assertTrue(Files.exists(journal));
+    }
 }

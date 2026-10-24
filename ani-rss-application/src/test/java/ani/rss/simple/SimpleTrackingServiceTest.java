@@ -16,6 +16,8 @@ class SimpleTrackingServiceTest {
         @Override public List<Release> releases(Show show) {return candidates;}
     }
     static class Downloader extends SimpleDownloader {
+        @Override public SimpleDownloader fork(){return this;}
+        @Override public void validateMedia(Release release) {}
         final Map<String, JsonObject> tasks = new LinkedHashMap<>();
         final Map<String, Path> paths = new HashMap<>();
         @Override public void connect(Settings settings) {}
@@ -132,5 +134,11 @@ class SimpleTrackingServiceTest {
         assertTrue(s.getReleases().getFirst().getLastProgressAt()>0);
         task.addProperty("total_size",-1);service.pollProgress();
         assertEquals(0,service.state().getShows().getFirst().getReleases().getFirst().getTotalBytes());
+    }
+    @Test void progressDoesNotWaitForTheCatalogAndPublishMonitor() throws Exception {
+        SimpleStore store=configured();Show s=show(store,"1");s.getReleases().add(release("one","首选",1));
+        Downloader dl=new Downloader();SimpleTrackingService service=new SimpleTrackingService(store,new Catalog(),dl);service.tick();
+        synchronized(service){java.util.concurrent.CompletableFuture.runAsync(service::pollProgress).get(2,java.util.concurrent.TimeUnit.SECONDS);}
+        assertTrue(service.state().getDownloadCheckedAt()>0);
     }
 }

@@ -26,11 +26,11 @@ public final class ReleasePolicy {
     }
 
     public static boolean allowed(Release release, List<String> groups) {
-        return release.isChinese() && rank(release, groups) != Integer.MAX_VALUE;
+        return release.getNumberingIssue().isBlank() && release.isChinese() && rank(release, groups) != Integer.MAX_VALUE;
     }
 
     public static boolean allowed(Release release, Show show, Settings settings) {
-        return release.isChinese() && (rank(release, groups(show,settings)) != Integer.MAX_VALUE
+        return release.getNumberingIssue().isBlank() && release.isChinese() && (rank(release, groups(show,settings)) != Integer.MAX_VALUE
                 || settings.isAllowOtherChinese() && show.getPreferredGroups().isEmpty());
     }
 

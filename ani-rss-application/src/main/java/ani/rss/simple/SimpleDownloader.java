@@ -14,13 +14,20 @@ import java.util.*;
 
 /** Separate category keeps the upstream rename/delete workers away from the resource library. */
 @Component
-public class SimpleDownloader {
+public class SimpleDownloader implements AutoCloseable {
+    private final MediaInspector inspector;
+    public SimpleDownloader(){this(new MediaInspector());}
+    SimpleDownloader(MediaInspector inspector){this.inspector=inspector;}
+    public SimpleDownloader fork(){return new SimpleDownloader(inspector);}
+    @Override public void close(){if(client!=null)client.close();}
+    public void validateMedia(Release release) throws IOException,InterruptedException {inspector.inspect(release);}
     public static final String CATEGORY = "ani-rss-simple";
     private HttpClient client;
     private Settings settings;
 
     public void connect(Settings settings) throws IOException, InterruptedException {
         this.settings = settings;
+        close();
         CookieManager cookies = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
         client = HttpClient.newBuilder().cookieHandler(cookies).connectTimeout(Duration.ofSeconds(10)).build();
         if (!settings.getCredential().startsWith("qbt_")) {
@@ -74,6 +81,8 @@ public class SimpleDownloader {
         if (videos.size() != 1) throw new IOException("资源包含 " + videos.size() + " 个视频，需要确认文件与集数的对应关系");
         release.setVideoPath(videos.getFirst().toString());
         release.setSubtitles(subtitles);
+        try {validateMedia(release);}
+        catch(IOException e){release.setStatus("invalid");release.setError(e.getMessage());throw e;}
         release.setStatus("ready");
         release.setProgress(100);
         release.setError("");

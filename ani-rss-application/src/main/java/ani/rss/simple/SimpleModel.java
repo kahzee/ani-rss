@@ -11,6 +11,7 @@ public final class SimpleModel {
     public static class Settings {
         private String libraryRoot = "/Media/追番资源";
         private String playbackRoot = "/Media/番剧";
+        private boolean watchRootConfirmed;
         // Optional path as seen by a remote/containerized downloader. Local access still uses libraryRoot.
         private String downloaderRoot = "";
         private String downloadHost = "";
@@ -57,6 +58,9 @@ public final class SimpleModel {
         private Set<String> pinnedEpisodes = new HashSet<>();
         private long lastCatalogAt;
         private long lastQueuedAt;
+        private Map<String, Double> episodeNumbers = new LinkedHashMap<>();
+        private Map<String, String> episodeIds = new LinkedHashMap<>();
+        private long episodeMetadataAt;
         private String message = "等待检查资源";
         // Filled on public snapshots, one planned resource per episode, not every alternative.
         private List<String> queuedReleaseIds = new ArrayList<>();
@@ -68,6 +72,10 @@ public final class SimpleModel {
         private String title;
         private String group;
         private double episode;
+        private Double sourceEpisode;
+        private String numberingIssue = "";
+        private String subtitleEvidence = "尚未检查媒体";
+        private String mediaSignature = "";
         private String magnet;
         private String torrentUrl;
         private long publishedAt;

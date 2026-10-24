@@ -113,7 +113,6 @@ public class PlaybackLibrary {
                 if (Files.exists(target) && !previous.files.contains(entry.getKey()))
                     throw new IOException("正式目录存在非本程序管理的同名文件，已保留: " + entry.getKey());
                 String stage = "ani-rss-" + token + "-" + tx.staged.size() + ".pending";
-                Files.copy(entry.getValue(), season.resolve(stage));
                 tx.staged.put(entry.getKey(), stage);
             }
             Set<String> affected = new LinkedHashSet<>(previous.files);
@@ -122,11 +121,14 @@ public class PlaybackLibrary {
                 Path target = inside(season, name);
                 String backup = "ani-rss-" + token + "-" + tx.backups.size() + ".backup";
                 if (Files.exists(target)) {
-                    Files.copy(target, season.resolve(backup));
                     tx.backups.put(name, backup);
                 } else tx.backups.put(name, "");
             }
+            // Record all planned paths before I/O, including partial staging copies.
             atomicWrite(journal, GsonStatic.toJson(tx));
+            for (var entry:inputs.entrySet()) Files.copy(entry.getValue(),season.resolve(tx.staged.get(entry.getKey())));
+            for (var entry:tx.backups.entrySet()) if(!entry.getValue().isEmpty())
+                replace(inside(season,entry.getKey()),inside(season,entry.getValue()));
             for (Map.Entry<String, String> entry : tx.staged.entrySet())
                 replace(season.resolve(entry.getValue()), inside(season, entry.getKey()));
             for (String obsolete : previous.files)
@@ -169,11 +171,17 @@ public class PlaybackLibrary {
                 if (!old.getFileName().toString().matches("\\.ani-rss-E\\d+(?:\\.5)?\\.json")) continue;
                 Path target=metadata.resolve(old.getFileName());
                 if (!Files.exists(target)) Files.copy(old,target);
+                // The local manifest is now authoritative; an old absolute-number sidecar
+                // must not be re-imported after canonicalization on the next poll.
+                Files.delete(old);
             }
         }
         try (DirectoryStream<Path> journals = Files.newDirectoryStream(metadata, ".ani-rss-E*.transaction.json")) {
             for (Path journal : journals) recover(season,journal);
         }
+        normalizeManifests(settings,show,season,metadata);
+        show.getSelected().entrySet().removeIf(e->show.getReleases().stream().noneMatch(r->r.getId().equals(e.getValue())
+                && r.getNumberingIssue().isBlank() && ReleasePolicy.episodeKey(r.getEpisode()).equals(e.getKey())));
         restoreMissingManifests(settings,show,season,metadata);
         try (DirectoryStream<Path> manifests = Files.newDirectoryStream(metadata, ".ani-rss-E*.json")) {
             for (Path manifest : manifests) {
@@ -181,7 +189,7 @@ public class PlaybackLibrary {
                 if (!name.matches("\\.ani-rss-E\\d+(?:\\.5)?\\.json")) continue;
                 Manifest installed = GsonStatic.fromJson(Files.readString(manifest), Manifest.class);
                 Release release = show.getReleases().stream().filter(r -> Objects.equals(r.getId(), installed.releaseId)).findFirst().orElse(null);
-                if (release == null) continue;
+                if (release == null || !release.getNumberingIssue().isBlank()) continue;
                 boolean complete = !installed.files.isEmpty();
                 for (String file : installed.files) if (!Files.isRegularFile(inside(season, file))) complete = false;
                 String episode = ReleasePolicy.episodeKey(release.getEpisode());
@@ -196,6 +204,53 @@ public class PlaybackLibrary {
                     show.getPinnedEpisodes().remove(episode);
                 }
             }
+        }
+    }
+
+    /** Consolidate old absolute-number manifests only after byte verification against retained originals.
+     * The normal publish journal handles replacing E25/E01 by one canonical E01. A restart can repeat this safely. */
+    private void normalizeManifests(Settings settings,Show show,Path season,Path metadata) throws IOException {
+        record Installed(Path path,Manifest manifest,Release release) {}
+        Map<String,List<Installed>> byEpisode=new LinkedHashMap<>();
+        try(DirectoryStream<Path> files=Files.newDirectoryStream(metadata,".ani-rss-E*.json")) {
+            for(Path path:files) {
+                if(!path.getFileName().toString().matches("\\.ani-rss-E\\d+(?:\\.5)?\\.json")) continue;
+                Manifest m=GsonStatic.fromJson(Files.readString(path),Manifest.class);
+                Release r=show.getReleases().stream().filter(v->v.getId().equals(m.releaseId)).findFirst().orElse(null);
+                if(r!=null && r.getNumberingIssue().isBlank()) byEpisode.computeIfAbsent(ReleasePolicy.episodeKey(r.getEpisode()),k->new ArrayList<>()).add(new Installed(path,m,r));
+            }
+        }
+        for(var entry:byEpisode.entrySet()) {
+            Path canonical=metadata.resolve(".ani-rss-E"+entry.getKey()+".json");List<Installed> group=entry.getValue();
+            String expected=baseName(show,group.getFirst().release().getEpisode())+".";
+            if(group.size()==1 && group.getFirst().path().equals(canonical)
+                    && group.getFirst().manifest().files.stream().allMatch(n->n.startsWith(expected))) continue;
+            List<Installed> manual=group.stream().filter(i->i.manifest().manual).toList();
+            if(manual.stream().map(i->i.release().getId()).distinct().count()>1) throw new IOException("第 "+entry.getKey()+" 集存在多个手动固定版本，已保留所有文件等待选择");
+            Installed chosen=manual.isEmpty()?group.getFirst():manual.getFirst();
+            if(manual.isEmpty()) for(Installed i:group) if(ReleasePolicy.better(i.release(),chosen.release(),show,settings)) chosen=i;
+            Set<String> owned=new LinkedHashSet<>();
+            for(Installed i:group) {
+                for(String file:i.manifest().files) {
+                    Path target=inside(season,file);if(!Files.exists(target)) continue;
+                    boolean equal=false;
+                    // A merged manifest can survive a crash before publish. Its union may
+                    // contain copies from any retained version of this canonical episode.
+                    for(Release candidate:show.getReleases()) {
+                        if(!candidate.getNumberingIssue().isBlank() || !ReleasePolicy.episodeKey(candidate.getEpisode()).equals(entry.getKey())) continue;
+                        Path sourceRoot=inside(Path.of(settings.getLibraryRoot()),show.getId()+"/"+candidate.getId());
+                        List<String> sources=new ArrayList<>(candidate.getSubtitles());if(candidate.getVideoPath()!=null)sources.add(candidate.getVideoPath());
+                        for(String source:sources) {Path original=checkedSource(sourceRoot,source);if(Files.size(original)==Files.size(target)&&Files.mismatch(original,target)==-1){equal=true;break;}}
+                        if(equal)break;
+                    }
+                    if(!equal) throw new IOException("编号归并前校验失败，已保留正式文件："+file);
+                    owned.add(file);
+                }
+            }
+            Manifest merged=new Manifest();merged.releaseId=chosen.release().getId();merged.manual=!manual.isEmpty();merged.files=new ArrayList<>(owned);
+            atomicWrite(canonical,GsonStatic.toJson(merged));
+            chosen.release().setPublishedFiles(publish(settings,show,chosen.release(),merged.manual));
+            for(Installed i:group) if(!i.path().equals(canonical)) Files.deleteIfExists(i.path());
         }
     }
 
@@ -258,7 +313,12 @@ public class PlaybackLibrary {
         for (Map.Entry<String, String> entry : tx.backups.entrySet()) {
             Path target = inside(directory, entry.getKey());
             if (entry.getValue().isEmpty()) Files.deleteIfExists(target);
-            else Files.copy(inside(directory, entry.getValue()), target, StandardCopyOption.REPLACE_EXISTING);
+            else {
+                Path backup=inside(directory,entry.getValue());
+                if(Files.exists(backup)) Files.copy(backup,target,StandardCopyOption.REPLACE_EXISTING);
+                else if(!Files.exists(target)) throw new IOException("事务备份和正式文件均丢失，已保留现场等待恢复");
+                // A planned backup which has not been renamed yet leaves the old target intact.
+            }
         }
         Path manifest = inside(journal.toAbsolutePath().getParent(), tx.manifestName);
         if (tx.oldManifest == null) Files.deleteIfExists(manifest);

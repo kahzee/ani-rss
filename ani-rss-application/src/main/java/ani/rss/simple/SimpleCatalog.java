@@ -20,6 +20,10 @@ public class SimpleCatalog {
 
     public SimpleCatalog() {}
     SimpleCatalog(String host) { this.host = host; }
+    public void episodeMetadata(Show show) {
+        if(show.getSeason()>1 && (show.getEpisodeNumbers().isEmpty() || System.currentTimeMillis()-show.getEpisodeMetadataAt()>24*60*60_000L))
+            EpisodeNumbers.metadata(show,ani.rss.util.other.BgmUtil.getEpisodes(show.getId(),0));
+    }
     private static final Pattern HASH = Pattern.compile("(?i)btih:([a-f0-9]{40}|[a-z2-7]{32})(?:&|$)");
     // Batch titles must not be silently assigned to the first episode.
     private static final Pattern BATCH = Pattern.compile("合集|全集|(?i)(?<![a-z])(?:complete|batch)(?![a-z])|[\\[【]\\d{1,3}\\s*[-~～]\\s*\\d{1,3}(?:v\\d)?[\\]】 ]|(?i)S\\d{1,2}E\\d{1,3}\\s*[-~～]\\s*(?:S\\d{1,2})?E?\\d{1,3}(?!\\d)");
@@ -65,7 +69,6 @@ public class SimpleCatalog {
                 if (hash.isBlank() || isBatch(resource.getTitle()) || "合集".equals(resource.getType())) continue;
                 Item item = new Item().setTitle(resource.getTitle()).setSubgroup(resource.getFansub().getName());
                 if (!RenameUtil.rename(parser, item) || !Double.isFinite(item.getEpisode()) || item.getEpisode() <= 0) continue;
-                if (show.getTotalEpisodes() > 0 && item.getEpisode() > show.getTotalEpisodes()) continue;
                 Release release = new Release();
                 release.setId(hash);
                 release.setTitle(resource.getTitle());
@@ -82,6 +85,7 @@ public class SimpleCatalog {
                 }
                 release.setPublishedAt(resource.getCreatedAt() == null ? Long.MAX_VALUE : resource.getCreatedAt().getTime());
                 release.setChinese(ReleasePolicy.hasChinese(resource.getTitle()));
+                EpisodeNumbers.apply(show,release);
                 result.add(release);
             }
             if (resources.size() < 100) return result;

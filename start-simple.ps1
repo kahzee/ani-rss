@@ -1,4 +1,4 @@
-param([int]$Port = 7789, [switch]$NoBrowser)
+param([int]$Port = 7789, [switch]$NoBrowser, [string]$Ffprobe = '')
 $ErrorActionPreference = 'Stop'
 $taskRoot = $PSScriptRoot
 $taskJar = Join-Path $taskRoot 'ani-rss.jar'
@@ -41,7 +41,18 @@ if (Test-Path -LiteralPath $taskPidFile) {
     if ($taskPrevious -and $taskPrevious.Path -eq $taskJava) { Write-Host 'The application is already running. Use the address printed by the previous launch.'; exit 0 }
 }
 $taskConfig = Join-Path $taskRoot 'config'
-$taskArguments = '-Dfile.encoding=UTF-8 -Xmx512m -jar "' + $taskJar + '" "--config=' + $taskConfig + '" --server.address=127.0.0.1 --server.port=' + $Port
+if (!$Ffprobe) {
+    $taskProbeCommand = Get-Command ffprobe.exe -ErrorAction SilentlyContinue
+    if ($taskProbeCommand) { $Ffprobe = $taskProbeCommand.Source }
+    else {
+        $taskProbeCandidate = Join-Path $taskRuntime 'ffmpeg\bin\ffprobe.exe'
+        if (Test-Path -LiteralPath $taskProbeCandidate) { $Ffprobe = $taskProbeCandidate }
+    }
+}
+if (!$Ffprobe -or !(Test-Path -LiteralPath $Ffprobe -PathType Leaf)) {
+    throw 'Media validation requires ffprobe. Install FFmpeg and add its bin folder to PATH, or run start-simple.ps1 -Ffprobe C:\path\to\ffprobe.exe.'
+}
+$taskArguments = '-Dfile.encoding=UTF-8 "-Dsimple.ffprobe=' + $Ffprobe + '" -Xmx512m -jar "' + $taskJar + '" "--config=' + $taskConfig + '" --server.address=127.0.0.1 --server.port=' + $Port
 $taskProcess = Start-Process -FilePath $taskJava -ArgumentList $taskArguments -WorkingDirectory $taskRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $taskRun 'stdout.log') -RedirectStandardError (Join-Path $taskRun 'stderr.log') -PassThru
 $taskProcess.Id | Set-Content -LiteralPath $taskPidFile
 $taskUrl = 'http://127.0.0.1:' + $Port + '/#/follow'

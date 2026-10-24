@@ -24,33 +24,39 @@ public class SimpleTrackingService {
     public SimpleTrackingService(SimpleStore store, SimpleCatalog catalog, SimpleDownloader downloader) {
         this.store=store; this.catalog=catalog; this.downloader=downloader;
         this.library=new PlaybackLibrary(store.directory().resolve("simple-playback"));
+        this.progressSettings=store.state().getSettings();
     }
     private final AtomicBoolean running = new AtomicBoolean();
     private volatile boolean forceCatalog;
     private static final long STALL_TIMEOUT = 10 * 60_000L;
     private static final long RETRY_DELAY = 30 * 60_000L;
+    private record TransferSnapshot(JsonArray tasks,long checkedAt) {}
+    private volatile TransferSnapshot transfers;
+    private volatile Settings progressSettings;
 
     public State state() {
         State snapshot=store.snapshot();
+        TransferSnapshot latest=transfers;
+        if(latest!=null && latest.checkedAt()>snapshot.getDownloadCheckedAt()) {
+            for(Show show:snapshot.getShows()) for(Release release:show.getReleases()) if("downloading".equals(release.getStatus())) {
+                JsonObject task=findTask(latest.tasks(),release.getId());if(task!=null) transfer(release,task,latest.checkedAt());
+            }
+            snapshot.setDownloadCheckedAt(latest.checkedAt());
+        }
         for(Show show:snapshot.getShows()) if(show.isEnabled())
             show.setQueuedReleaseIds(ReleasePolicy.plan(show,snapshot.getSettings()).stream().map(Release::getId).toList());
         return snapshot;
     }
 
     /** Transfer-only updates are cheap and do not refresh catalogs or change the download queue. */
-    @Scheduled(initialDelay = 25000, fixedDelay = 10000)
-    public synchronized void pollProgress() {
-        State state=store.state();Settings settings=state.getSettings();
+    @Scheduled(initialDelay = 25000, fixedDelay = 10000, scheduler="simpleProgressScheduler")
+    public void pollProgress() {
+        State state=store.snapshot();Settings settings=progressSettings;
         if(settings.getDownloadHost().isBlank() || settings.getCredential().isBlank()
                 || state.getShows().stream().flatMap(s->s.getReleases().stream()).noneMatch(r->"downloading".equals(r.getStatus()))) return;
-        try {
-            downloader.connect(settings);JsonArray tasks=downloader.tasks();long now=System.currentTimeMillis();
-            for(Show show:state.getShows()) for(Release release:show.getReleases()) {
-                if(!"downloading".equals(release.getStatus())) continue;
-                JsonObject task=findTask(tasks,release.getId());
-                if(task!=null) transfer(release,task,now);
-            }
-            state.setDownloadCheckedAt(now);store.publish();
+        try(SimpleDownloader progress=downloader.fork()) {
+            progress.connect(settings);
+            transfers=new TransferSnapshot(progress.tasks().deepCopy(),System.currentTimeMillis());
         } catch(Exception e) {log.debug("下载进度暂未更新: {}",e.getClass().getSimpleName());}
     }
 
@@ -97,6 +103,7 @@ public class SimpleTrackingService {
         probe(resources);
         probe(playback);
         store.state().setSettings(incoming);
+        progressSettings=incoming;
         store.save();
     }
 
@@ -153,6 +160,9 @@ public class SimpleTrackingService {
         Settings settings = store.state().getSettings();
         if (!ReleasePolicy.allowed(release, show, settings))
             throw new IllegalArgumentException("先认可该字幕组，并确认资源有中文字幕");
+        if("invalid".equals(release.getStatus()) && release.getVideoPath()!=null) {
+            downloader.connect(settings);downloader.checkFinished(release);store.save();refresh();return;
+        }
         if (Set.of("ready", "downloading", "submitting").contains(release.getStatus())) return;
         downloader.connect(settings);
         JsonArray tasks = downloader.tasks();
@@ -191,7 +201,13 @@ public class SimpleTrackingService {
         Settings settings = state.getSettings();
         Set<String> recoveryFailed=new HashSet<>();
         for (Show show : state.getShows()) {
-            try { library.reconcile(settings, show); }
+            try {
+                String before=GsonStatic.toJson(show);
+                try {catalog.episodeMetadata(show);} catch(Exception e) {log.debug("本季集数目录暂未刷新: {}",show.getId());}
+                EpisodeNumbers.apply(show);
+                if(!before.equals(GsonStatic.toJson(show))) store.save(); // Persist numbering before playback migration.
+                library.reconcile(settings, show);
+            }
             catch (Exception e) { show.setMessage("播放目录恢复待处理：" + brief(e)); recoveryFailed.add(show.getId()); }
         }
         boolean force = forceCatalog;
@@ -226,7 +242,7 @@ public class SimpleTrackingService {
         for (Show show : state.getShows()) {
             if(recoveryFailed.contains(show.getId())) continue;
             for (Release release : show.getReleases()) {
-                if (release.getDownloadPath() == null) continue;
+                if (release.getDownloadPath() == null || "invalid".equals(release.getStatus())) continue;
                 JsonObject task = findTask(tasks, release.getId());
                 if (task != null && !"ready".equals(release.getStatus())) {
                     transfer(release,task,now);
@@ -318,16 +334,19 @@ public class SimpleTrackingService {
         long waiting=show.getReleases().stream().filter(r->"waiting".equals(r.getStatus())).count();
         long failed=show.getReleases().stream().filter(r->"error".equals(r.getStatus())).count();
         boolean allowed=show.getReleases().stream().anyMatch(r->ReleasePolicy.allowed(r,show,settings));
-        String prefix="已就绪 "+show.getSelected().size()+" 集 · ";
+        String prefix="已发布 "+show.getSelected().size()+" 集 · ";
+        long uncertain=show.getReleases().stream().filter(r->!r.getNumberingIssue().isBlank()).count();
         if(active>0) show.setMessage(prefix+active+" 个版本正在下载");
         else if(!ReleasePolicy.plan(show,settings).isEmpty()) show.setMessage(prefix+"排队中，等待下载名额");
         else if(waiting>0) show.setMessage(prefix+"资源暂无下载进展，已让出名额并定时重试");
         else if(failed>0) show.setMessage(prefix+"部分版本下载失败，定时重试；详情可查看原因");
         else if(!allowed) show.setMessage(show.getReleases().isEmpty()?"暂无可识别的单集资源，等待发布或资源收录":"暂无明确标注中文字幕的可用版本，等待更新");
+        else if(uncertain>0) show.setMessage(prefix+"部分资源集数待核对，已保留原件");
         else show.setMessage(prefix+"等待后续更新");
     }
 
     private void install(Show show, Release release, boolean manual) throws IOException {
+        try{downloader.validateMedia(release);}catch(InterruptedException e){Thread.currentThread().interrupt();throw new IOException("媒体校验被中断",e);}
         release.setPublishedFiles(library.publish(store.state().getSettings(), show, release, manual));
         show.getSelected().put(ReleasePolicy.episodeKey(release.getEpisode()), release.getId());
         release.setError("");

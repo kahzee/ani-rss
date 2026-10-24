@@ -22,7 +22,7 @@ class SimpleDownloaderTest {
         server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         replies.put("/api/v2/auth/login","Ok.");replies.put("/api/v2/app/version","v5.0.0");replies.put("/api/v2/torrents/createCategory","");replies.put("/api/v2/torrents/info","[]");replies.put("/api/v2/torrents/add","Ok.");
         server.createContext("/",exchange->{String path=exchange.getRequestURI().getPath();bodies.put(path,new String(exchange.getRequestBody().readAllBytes(),StandardCharsets.UTF_8));authorization=exchange.getRequestHeaders().getFirst("Authorization");byte[] bytes=replies.getOrDefault(path,"[]").getBytes(StandardCharsets.UTF_8);exchange.sendResponseHeaders(200,bytes.length);exchange.getResponseBody().write(bytes);exchange.close();});server.start();
-        downloader=new SimpleDownloader();
+        downloader=new SimpleDownloader(new MediaInspector(video->"{\"streams\":[{\"codec_type\":\"video\",\"width\":1920,\"height\":1080}],\"format\":{\"duration\":24}}"));
     }
     @AfterEach void teardown(){server.stop(0);}
     private Settings settings(String credential){Settings s=new Settings();s.setLibraryRoot(root.toString());s.setDownloadHost("http://127.0.0.1:"+server.getAddress().getPort());s.setCredential(credential);s.setUsername("admin");return s;}

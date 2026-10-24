@@ -14,6 +14,7 @@
       <el-input v-model="query" placeholder="搜索番名，或粘贴 Bangumi 链接" clearable class="search" @keyup.enter="search"><template #append><el-button @click="search" :loading="searching">搜索</el-button></template></el-input>
     </div>
 
+    <el-alert v-if="tab==='following' && state.settings.credentialSaved && !state.settings.watchRootConfirmed" class="watch-root-note" title="首次将播放父目录关联到极影视，之后新番与新集会自动扫描。页面“已发布”表示文件已整理，不代表已经核对极影视条目。" type="info" :closable="false" show-icon/>
     <div v-if="tab === 'following'" class="show-grid">
       <section v-if="activeDownloads.length || pendingDownloads.length" class="download-overview" aria-label="下载进度">
         <div class="download-heading"><div><h2>下载进度</h2><p>{{ activeDownloads.length }} 个下载中 · {{ queuedDownloads.length }} 个排队<span v-if="retryDownloads.length"> · {{ retryDownloads.length }} 个待重试</span><span v-if="activeDownloads.length"> · {{ formatBytes(totalSpeed) }}/s</span></p></div><span class="sync-time">每 10 秒更新<span v-if="state.downloadCheckedAt"> · 最近 {{ new Date(state.downloadCheckedAt).toLocaleTimeString('zh-CN', {hour12:false}) }}</span></span></div>
@@ -25,7 +26,7 @@
         <details v-if="pendingDownloads.length" class="pending-downloads"><summary>等待下载 {{ pendingDownloads.length }} 个版本 · 展开查看</summary><div class="pending-list"><div v-for="item in pendingDownloads" :key="item.release.id" class="pending-row"><el-button link @click="openDetail(item.show.id)">{{ item.show.title }} · 第 {{ item.release.episode }} 集</el-button><span>{{ item.release.group }} · {{ downloadKind(item) }} · {{ item.retry ? '待重试' : '等待名额' }}</span></div></div></details>
       </section>
       <article v-for="show in state.shows" :key="show.id" class="show-card" @click="openDetail(show.id)">
-        <div class="cover"><img v-if="show.image" :src="show.image" :alt="show.title" loading="lazy"><span v-else>追</span><div class="cover-count">{{ Object.keys(show.selected).length }}{{ show.totalEpisodes ? ` / ${show.totalEpisodes}` : '' }} 集可看</div></div>
+        <div class="cover"><img v-if="show.image" :src="show.image" :alt="show.title" loading="lazy"><span v-else>追</span><div class="cover-count">{{ Object.keys(show.selected).length }}{{ show.totalEpisodes ? ` / ${show.totalEpisodes}` : '' }} 集已发布</div></div>
         <div class="card-info"><h2>{{ show.title }}</h2><p class="status">{{ show.message }}</p><div v-for="release in downloading(show)" :key="release.id" class="card-progress"><span>第 {{ release.episode }} 集 · {{ transferState(release) }}</span><el-progress :percentage="percentage(release)" :stroke-width="5"/><span>{{ formatBytes(release.downloadSpeed) }}/s</span></div><p v-if="show.enabled && show.queuedReleaseIds?.length" class="download-text">{{ show.queuedReleaseIds.length }} 个版本等待下载</p><div class="card-foot"><span>{{ show.enabled ? '自动追番' : '已暂停' }}</span><span>版本与目录 →</span></div></div>
       </article>
       <el-empty v-if="!state.shows.length" description="还没有关注的番剧。找到喜欢的，点一下追番。"><el-button type="primary" @click="tab='discover'; discover()">去找番</el-button></el-empty>
@@ -54,6 +55,7 @@
         <el-form-item label="本机可访问的资源库目录"><el-input v-model="settings.libraryRoot"/><div class="hint">下载的原始版本和被替换的版本保存在这里。远程 NAS 可填写映射盘路径。</div></el-form-item>
         <el-form-item label="下载器内的资源库路径（远程 / Docker 时填写）"><el-input v-model="settings.downloaderRoot" placeholder="例如 /downloads/ani-rss-simple；同机同路径时留空"/><div class="hint">对应上方同一文件夹。程序会自动换算两端路径，不再把 Windows 路径发给 NAS。</div></el-form-item>
         <el-form-item label="极影视正式播放目录"><el-input v-model="settings.playbackRoot"/><div class="hint">极影视只关联这里的番剧文件夹。两处目录都必须能被本程序访问，资源库与下载器的路径须一致。</div></el-form-item>
+        <el-form-item><el-switch v-model="settings.watchRootConfirmed" active-text="已完成极影视播放父目录的首次关联"/><div class="hint">只记录首次关联确认；后续由极影视自动扫描新番。无需逐部关联，也不会把目录发布状态当作入库查询结果。</div></el-form-item>
         <el-form-item label="认可的字幕组（从最喜欢到可接受，每行一个）"><el-input v-model="trustedText" type="textarea" :rows="4" placeholder="结合番剧详情里的字幕组名称填写；留空时等待，不自动下载。"/></el-form-item>
         <el-form-item label="首次可看版本优先字幕组"><el-input v-model="settings.initialGroup" placeholder="例如 ANi；留空按上方偏好选择"/><div class="hint">先下载这个组的可接受版本，之后才补下载更偏好的版本。</div></el-form-item>
         <el-form-item><el-switch v-model="settings.allowOtherChinese" active-text="名单内暂无资源时，允许其他中文字幕组"/></el-form-item>
@@ -65,7 +67,7 @@
 
     <el-dialog v-model="detailOpen" :title="detail?.show.title || '番剧详情'" width="min(1040px, 96vw)" :close-on-click-modal="false">
       <div v-if="detail" class="detail">
-        <div class="path-box"><strong>在极影视分类中关联这个文件夹</strong><div class="path-line"><code>{{ detail.playbackPath }}</code><el-button size="small" @click="copyPath">复制路径</el-button></div><p>首次关联一次，后续新集与版本切换沿用同一目录。{{ detail.show.message }}</p></div>
+        <div class="path-box"><strong>正式文件位置</strong><div class="path-line"><code>{{ detail.playbackPath }}</code><el-button size="small" @click="copyPath">复制路径</el-button></div><p>首次在极影视关联播放父目录：{{ state.settings.playbackRoot }}。之后新番与新集自动扫描，无需逐部添加。{{ detail.show.message }}</p><p>“已发布”仅表示正式目录已写入；海报、剧集匹配及实际播放以极影视为准。</p></div>
         <el-collapse><el-collapse-item title="本番偏好与追番状态" name="preferences">
           <el-form label-position="top"><el-form-item label="本番认可字幕组（按偏好排序；留空沿用基础配置）"><el-input v-model="preferenceText" type="textarea" :rows="3"/></el-form-item><p class="hint">已发现字幕组：<el-button v-for="group in discoveredGroups" :key="group" link type="primary" @click="addGroup(group)">{{ group }}</el-button><span v-if="!discoveredGroups.length">暂未发现可识别的单集资源</span></p><div class="preference-controls"><el-switch v-model="preferences.fastest" active-text="着急看：优先最早发布的可接受版本"/><el-switch v-model="preferences.enabled" active-text="自动追番"/><el-button type="primary" @click="savePreferences" :loading="saving">保存偏好</el-button></div></el-form>
         </el-collapse-item></el-collapse>
@@ -73,8 +75,8 @@
         <div v-for="episode in episodes" :key="episode.key" class="episode">
           <div class="episode-heading"><strong>第 {{ episode.key }} 集</strong><el-tag v-if="detail.show.pinnedEpisodes.includes(episode.key)" type="warning" size="small">手动固定</el-tag><el-button v-if="detail.show.pinnedEpisodes.includes(episode.key)" link type="primary" @click="automatic(episode.key)">恢复自动</el-button></div>
           <div v-for="release in episode.releases" :key="release.id" class="release">
-            <div class="release-info"><div><strong>{{ release.group }}</strong> <el-tag v-if="detail.show.selected[episode.key] === release.id" size="small" type="success">正式版本</el-tag> <el-tag v-if="!release.chinese" size="small" type="info">未明确标注中文</el-tag> <el-tag v-else-if="!allowed(release)" size="small" type="info">尚未认可</el-tag></div><p :title="release.title">{{ release.title }}</p><el-progress v-if="release.status==='downloading'" :percentage="Math.min(100, Math.round(release.progress))"/><p v-if="release.error" class="error">{{ release.error }}</p></div>
-            <div class="release-actions"><span>{{ statusLabel(release) }}</span><el-button v-if="release.status === 'ready' && detail.show.selected[episode.key] !== release.id" size="small" :disabled="!allowed(release)" :loading="working === release.id" @click="versionAction('choose', release)">切换到此版本</el-button><el-button v-else-if="['available','error','waiting','paused'].includes(release.status)" size="small" :disabled="!allowed(release)" :loading="working === release.id" @click="versionAction('download', release)">{{ ['waiting','paused'].includes(release.status) ? '立即重试' : '下载备选' }}</el-button></div>
+            <div class="release-info"><div><strong>{{ release.group }}</strong> <el-tag v-if="detail.show.selected[episode.key] === release.id" size="small" type="success">正式版本</el-tag> <el-tag v-if="!release.chinese" size="small" type="info">未明确标注中文</el-tag> <el-tag v-else-if="!allowed(release)" size="small" type="info">尚未认可</el-tag></div><p :title="release.title">{{ release.title }}</p><el-progress v-if="release.status==='downloading'" :percentage="Math.min(100, Math.round(release.progress))"/><p v-if="release.sourceEpisode != null && release.sourceEpisode !== release.episode" class="hint">发布编号 {{ release.sourceEpisode }} → 本季第 {{ release.episode }} 集</p><p v-if="release.numberingIssue" class="error">{{ release.numberingIssue }}</p><p v-if="release.status==='ready'" class="hint">{{ release.subtitleEvidence }}</p><p v-if="release.error" class="error">{{ release.error }}</p></div>
+            <div class="release-actions"><span>{{ statusLabel(release) }}</span><el-button v-if="release.status === 'ready' && detail.show.selected[episode.key] !== release.id" size="small" :disabled="!allowed(release)" :loading="working === release.id" @click="versionAction('choose', release)">切换到此版本</el-button><el-button v-else-if="['available','error','waiting','paused','invalid'].includes(release.status)" size="small" :disabled="!allowed(release)" :loading="working === release.id" @click="versionAction('download', release)">{{ release.status==='invalid' ? '重新校验' : ['waiting','paused'].includes(release.status) ? '立即重试' : '下载备选' }}</el-button></div>
           </div>
         </div>
         <el-empty v-if="!episodes.length" description="正在寻找单集资源；找不到时会继续等待并自动检查。"/>
@@ -127,7 +129,7 @@ function transferState(release) {
 }
 function eta(release) {const s=release.etaSeconds;if(!release.downloadSpeed || s==null || s<0 || s>=8640000) return '';if(s<60)return `${Math.max(1,Math.ceil(s))} 秒`;if(s<3600)return `${Math.ceil(s/60)} 分钟`;return `${Math.floor(s/3600)} 小时 ${Math.ceil(s%3600/60)} 分钟`}
 const isFollowed = id => state.value.shows.some(show => show.id === String(id))
-const allowed = release => release.chinese && (detail.value.groups.some(g => g.toLowerCase() === release.group.toLowerCase()) || state.value.settings.allowOtherChinese && !detail.value.show.preferredGroups.length)
+const allowed = release => !release.numberingIssue && release.chinese && (detail.value.groups.some(g => g.toLowerCase() === release.group.toLowerCase()) || state.value.settings.allowOtherChinese && !detail.value.show.preferredGroups.length)
 const discoveredGroups = computed(() => [...new Set(detail.value?.show.releases.map(r => r.group) || [])].sort())
 const episodes = computed(() => {
   const groups = new Map()
@@ -141,7 +143,7 @@ const episodes = computed(() => {
     return rank(a)-rank(b) || a.publishedAt-b.publishedAt
   })}))
 })
-const statusLabel = release => ({available:'可按需下载', submitting:'正在提交', downloading:`下载中 ${Math.round(release.progress)}%`, ready:'已在资源库', error:'下载失败，等待重试', waiting:'暂无进展，等待重试', paused:'已暂停'}[release.status] || release.status)
+const statusLabel = release => ({available:'可按需下载', submitting:'正在提交', downloading:`下载中 ${Math.round(release.progress)}%`, ready:'已在资源库', invalid:'媒体校验未通过', error:'下载失败，等待重试', waiting:'暂无进展，等待重试', paused:'已暂停'}[release.status] || release.status)
 
 async function load() {
   try {state.value = (await post('state')).data; if (detailOpen.value && detail.value) await loadDetail(detail.value.show.id); if(tab.value==='discover' && sourceMode.value==='mikan' && !searching.value) await discover(false)} finally {loading.value=false}
