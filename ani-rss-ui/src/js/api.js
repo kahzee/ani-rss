@@ -1,6 +1,4 @@
 import {ElMessage} from "element-plus";
-import {authorization} from "@/js/global.js";
-import {shouldRenewSession, shouldClearSession} from './session.js';
 
 let post = async (url, body, options = {}) => {
     return await fetch_(url, 'POST', body, options);
@@ -20,10 +18,6 @@ let put = async (url, body) => {
 
 let fetch_ = async (url, method, body, options = {}) => {
     let headers = {}
-    const sentAuthorization = authorization.value
-    if (sentAuthorization) {
-        headers['Authorization'] = sentAuthorization
-    }
     if (body) {
         headers['Content-Type'] = 'application/json'
     }
@@ -32,11 +26,7 @@ let fetch_ = async (url, method, body, options = {}) => {
         body: body ? JSON.stringify(body) : null,
         headers: headers
     })
-        .then(res => {
-            const renewed = res.headers.get('X-Renewed-Authorization')
-            if (shouldRenewSession(sentAuthorization, authorization.value, renewed)) authorization.value = renewed
-            return res.json()
-        })
+        .then(res => res.json())
         .then(res => {
             let {code, message, t} = res
 
@@ -50,12 +40,6 @@ let fetch_ = async (url, method, body, options = {}) => {
 
             if (!options.silent) {
                 ElMessage.error(message)
-            }
-            if (shouldClearSession(code, message, sentAuthorization, authorization.value)) {
-                authorization.value = ''
-                setTimeout(() => {
-                    if (!authorization.value) location.reload()
-                }, 1000)
             }
             return new Promise((resolve, reject) => {
                 reject(new Error(message));

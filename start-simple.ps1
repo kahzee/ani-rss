@@ -64,5 +64,5 @@ for ($taskAttempt = 0; $taskAttempt -lt 60; $taskAttempt++) {
 }
 if (!$taskReady) { throw ('Startup is taking longer than expected. See ' + (Join-Path $taskRun 'stdout.log')) }
 Write-Host ('Ready: ' + $taskUrl)
-Write-Host 'Initial login: admin / admin. Configuration and resource history are stored in the config folder.'
+Write-Host 'Local mode: no login required. Configuration and resource history are stored in the config folder.'
 if (!$NoBrowser) { Start-Process $taskUrl }

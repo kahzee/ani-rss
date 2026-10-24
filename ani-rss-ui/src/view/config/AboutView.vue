@@ -25,13 +25,6 @@
       </el-button>
     </div>
     <div v-loading.fullscreen.lock="actionLoading" class="button-list">
-      <PopconfirmView title="你确定要退出吗?" @confirm="logout">
-        <template #reference>
-          <el-button type="danger" bg text icon="Back">
-            退出
-          </el-button>
-        </template>
-      </PopconfirmView>
       <PopconfirmView title="你确定重启吗?" @confirm="stop(0)">
         <template #reference>
           <el-button bg icon="RefreshRight" text type="warning">重启</el-button>
@@ -186,11 +179,6 @@ onMounted(() => {
         about.value = res.data
       })
 })
-
-let logout = () => {
-  authorization.value = ''
-  location.reload()
-}
 
 let openUrl = (url) => window.open(url)
 
