@@ -36,7 +36,7 @@ python tools/collect_opinions.py --state config/simple-tracking.json --output co
 | IMDb | 使用官方非商业评分数据集，缓存一天；只有有明确 IMDb ID 的条目才导入评分。数据集不包含评论，网页评论不可用不伪造 |
 | 豆瓣 | 有明确条目 ID 时尝试公开页面结构化评分与内嵌评论。验证跳转或页面无数据会失败；不会自动登录、解验证码或声称已取全站评论 |
 | TMDB | 支持环境变量 `TMDB_READ_TOKEN`。必须有 `tv/ID` 或 `movie/ID` 映射；系列总分单独标记，评论采集中文简繁、英文、日文，仍明确是语言子集 |
-| Anime-Planet / aniSearch | 有明确条目映射时尝试公开 JSON-LD；仅包含页面内嵌评论，状态为部分获取 |
+| AniDB / Anime-Planet / aniSearch | 有明确条目映射时尝试公开 JSON-LD；仅包含页面内嵌评论，状态为部分获取。AniDB 实测返回 403，不绕过 |
 | AniList | 保留跨站 ID，未启用采集。其条款限制同类追番/列表服务，需先确认适用条件 |
 
 可选导入 [bangumi-data](https://github.com/bangumi-data/bangumi-data) 发布的跨站映射：从其 README 说明的分发地址获取 `dist/data.json` 后指定 `--site-map 路径`。映射资料不等于评分数据，也不把其中标注 SP 的媒体链接当作正篇。

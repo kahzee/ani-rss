@@ -23,7 +23,7 @@ from bs4 import BeautifulSoup
 UA = 'ani-rss-simple/0.1 (https://github.com/kahzee/ani-rss)'
 HOSTS = {'api.bgm.tv', 'bgm.tv', 'kitsu.io', 'kitsu.app', 'api.jikan.moe',
          'myanimelist.net', 'api.themoviedb.org', 'www.imdb.com', 'movie.douban.com',
-         'api.bilibili.com', 'www.bilibili.com', 'www.anime-planet.com', 'www.anisearch.com'}
+         'api.bilibili.com', 'www.bilibili.com', 'www.anime-planet.com', 'www.anisearch.com', 'anidb.net'}
 
 
 class Unavailable(Exception):
@@ -661,7 +661,8 @@ class Collector:
         self.execute(sid, 'myanimelist', 'rating', lambda _: self.mal(sid))
         # Do not silently sign up for services or infer an unrelated movie/season ID.
         for source, template in [('douban', 'https://movie.douban.com/subject/{}/'), ('imdb', 'https://www.imdb.com/title/{}/'),
-                                 ('animeplanet', 'https://www.anime-planet.com/anime/{}'), ('anisearch', 'https://www.anisearch.com/anime/{}')]:
+                                 ('animeplanet', 'https://www.anime-planet.com/anime/{}'), ('anisearch', 'https://www.anisearch.com/anime/{}'),
+                                 ('anidb', 'https://anidb.net/anime/{}')]:
             external = self.s.mapped(sid, source)
             if external and re.fullmatch(r'[A-Za-z0-9_-]+', external):
                 self.execute(sid, source, 'structured_page', lambda _, src=source, u=template.format(external): self.structured_page(sid, src, u))
@@ -740,7 +741,7 @@ def main():
     if args.mappings:
         for sid, sources in json.loads(args.mappings.read_text(encoding='utf-8-sig')).items():
             for source, external in sources.items():
-                if source not in {'kitsu','myanimelist','imdb','douban','tmdb','animeplanet','anisearch','bilibili'}:
+                if source not in {'kitsu','myanimelist','imdb','douban','tmdb','animeplanet','anisearch','anidb','bilibili'}:
                     raise ValueError('Unsupported mapping source')
                 store.mapping(valid_id(sid), source, external, 'explicit mapping file')
     network = Network(store, args.request_budget)
