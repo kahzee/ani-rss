@@ -35,6 +35,9 @@ public class SimpleTrackingService {
     private record TransferSnapshot(JsonArray tasks,Map<String,JsonArray> files,long checkedAt) {}
     private volatile TransferSnapshot transfers;
     private volatile Settings progressSettings;
+    private final TransferHealth transferHealth=new TransferHealth();
+    private record ReuseResult(SimpleDownloader.ExistingState state,Release copy,String error) {}
+    private final Map<String,java.util.concurrent.CompletableFuture<ReuseResult>> reuseJobs=new LinkedHashMap<>();
 
     public State state() {
         State snapshot=store.snapshot();
@@ -48,6 +51,8 @@ public class SimpleTrackingService {
         for(Show show:snapshot.getShows()) {
             show.setMissingEpisodes(show.getEpisodeIds().keySet().stream().filter(ep->!show.getSelected().containsKey(ep)).toList());
             if(show.isEnabled())show.setQueuedReleaseIds(ReleasePolicy.plan(show,snapshot.getSettings()).stream().map(Release::getId).toList());
+            show.setRetryReleaseIds(DownloadQueue.retries(show,snapshot.getSettings()));
+            show.setConflictReleaseIds(DownloadQueue.conflicts(show,snapshot.getSettings()));
         }
         return snapshot;
     }
@@ -78,6 +83,7 @@ public class SimpleTrackingService {
         release.setTotalBytes(Math.max(0,number(task,"total_size",number(task,"size",0))));
         long eta=number(task,"eta",-1);release.setEtaSeconds(eta>=8640000?-1:eta);
         release.setSeeds((int)number(task,"num_seeds",0));
+        release.setAvailability(task.has("availability")&&!task.get("availability").isJsonNull()?task.get("availability").getAsDouble():-1);
     }
     private static void transfer(Release release,JsonObject task,long now,JsonArray files) {
         transfer(release,task,now);
@@ -271,6 +277,7 @@ public class SimpleTrackingService {
             return;
         }
         JsonArray tasks = downloader.tasks();
+        recheckConflicts(state);
         Map<String,JsonArray> sharedFiles=syncBatches(state,tasks);
         long now=System.currentTimeMillis();
         state.setDownloadCheckedAt(now);
@@ -291,16 +298,19 @@ public class SimpleTrackingService {
                     String taskState=task.get("state").getAsString().toLowerCase(Locale.ROOT);
                     boolean stopped=taskState.startsWith("stopped") || taskState.startsWith("paused");
                     if (stopped && progress<100) {
+                        transferHealth.forget(SimpleDownloader.hash(release));
                         if (!"waiting".equals(release.getStatus())) {release.setStatus("paused");release.setError("任务已暂停");}
                     } else {
                         release.setStatus("downloading");
+                        String unhealthy=release.getFileIndex()<0?transferHealth.assess(SimpleDownloader.hash(release),task,now,show.getSelected().containsKey(ReleasePolicy.episodeKey(release.getEpisode()))):null;
                         if (release.getFileIndex()<0 && show.isEnabled() && progress<100 && !taskState.contains("checking") && !taskState.contains("moving")
-                                && !taskState.contains("queued") && now-release.getLastProgressAt()>=STALL_TIMEOUT) {
+                                && !taskState.contains("queued") && (unhealthy!=null||now-release.getLastProgressAt()>=STALL_TIMEOUT)) {
                             try {
                                 downloader.pause(release);
+                                transferHealth.forget(SimpleDownloader.hash(release));
                                 task.addProperty("state","stoppedDL");
                                 release.setStatus("waiting");release.setFailures(release.getFailures()+1);release.setRetryAt(now+Math.min(7L*24*60*60_000,RETRY_DELAY*(1L<<Math.min(8,release.getFailures()-1))));
-                                release.setError("10 分钟没有下载进展，已让出名额；30 分钟后重试，期间尝试其他中文字幕版本");
+                                release.setError((unhealthy==null?"10 分钟没有下载进展，已让出名额":unhealthy)+"；下次检查 "+new java.text.SimpleDateFormat("MM-dd HH:mm").format(new Date(release.getRetryAt())));
                             } catch(Exception e) {release.setError("暂停无进展任务失败："+brief(e));}
                         }
                     }
@@ -342,12 +352,48 @@ public class SimpleTrackingService {
                             .thenComparingDouble(c->c.release().getEpisode())).orElse(null);
             if(next==null) break;
             attempted.add(next.release().getId());
-            try {submit(next.show(),next.release());active++;}
-            catch(Exception e) {next.release().setStatus("error");next.release().setRetryAt(now+RETRY_DELAY);next.release().setError(brief(e));}
+            try {submit(next.show(),next.release());if(!"ready".equals(next.release().getStatus()))active++;}
+            catch(Exception e) {next.release().setStatus(e instanceof DownloadConflictException?"conflict":"error");next.release().setRetryAt(e instanceof DownloadConflictException?0:now+RETRY_DELAY);next.release().setError(brief(e));}
             store.save();
         }
         for(Show show:eligibleShows) updateMessage(show,settings);
         store.save();
+    }
+
+    private void recheckConflicts(State state) throws IOException {
+        long now=System.currentTimeMillis();
+        for(Show show:state.getShows())for(Release r:show.getReleases()) {
+            if("error".equals(r.getStatus())&&r.getError().contains("路径或分类不属于此资源库")){r.setStatus("conflict");r.setRetryAt(0);}
+            var pending=reuseJobs.get(r.getId());
+            if(pending!=null) {
+                if(!pending.isDone())continue;
+                ReuseResult result=pending.join();reuseJobs.remove(r.getId());
+                if(result.error()!=null){r.setStatus("conflict");r.setRetryAt(now+30*60_000L);r.setError(result.error());}
+                else switch(result.state()) {
+                    case IMPORTED -> {
+                        Release copied=result.copy();r.setDownloadPath(copied.getDownloadPath());r.setVideoPath(copied.getVideoPath());r.setSubtitles(copied.getSubtitles());
+                        r.setMediaSignature(copied.getMediaSignature());r.setSubtitleEvidence(copied.getSubtitleEvidence());r.setImportedFrom(copied.getImportedFrom());
+                        r.setStatus("ready");r.setProgress(100);r.setRetryAt(0);r.setError("");
+                    }
+                    case OWNED -> {r.setStatus("downloading");r.setRetryAt(0);r.setError("");}
+                    case MISSING -> {r.setStatus("available");r.setRetryAt(0);r.setError("");}
+                    case BLOCKED -> {r.setRetryAt(now+5*60_000L);r.setError("旧任务尚未完成，原任务保持不变；5 分钟后核对，可先使用其他版本");}
+                }
+                store.save();
+            }
+            if(!"conflict".equals(r.getStatus())||!DownloadQueue.needed(show,r,state.getSettings())||r.getRetryAt()>now)continue;
+            if(!reuseJobs.isEmpty())continue; // One large copy at a time, independently of scheduling and telemetry.
+            Release copy=GsonStatic.fromJson(GsonStatic.toJson(r),Release.class);
+            Settings privateSettings=GsonStatic.fromJson(GsonStatic.toJson(state.getSettings()),Settings.class);
+            Path destination=PlaybackLibrary.resourceDirectory(privateSettings,show,copy);
+            var future=new java.util.concurrent.CompletableFuture<ReuseResult>();reuseJobs.put(r.getId(),future);
+            r.setError("后台校验并复制旧资源中，不占下载名额");store.save();
+            Thread.startVirtualThread(()->{
+                try(SimpleDownloader worker=downloader.fork()) {worker.connect(privateSettings);future.complete(new ReuseResult(worker.reuseExisting(copy,destination),copy,null));}
+                catch(Exception e){future.complete(new ReuseResult(null,copy,brief(e)));}
+                wake();
+            });
+        }
     }
 
     /** One file-list request and one priority union per shared torrent, across all subjects. */
@@ -391,10 +437,13 @@ public class SimpleTrackingService {
         String status=torrent.get("state").getAsString().toLowerCase(Locale.ROOT);
         if(shared.getLastProgressAt()==0||progress!=shared.getProgress()||status.contains("checking")||status.contains("moving"))shared.setLastProgressAt(now);
         shared.setProgress(progress);
-        if(progress>=100||status.contains("checking")||status.contains("moving")||status.contains("queued")||status.startsWith("stopped")||status.startsWith("paused")||now-shared.getLastProgressAt()<STALL_TIMEOUT)return;
+        boolean upgrade=state.getShows().stream().noneMatch(s->s.getReleases().stream().anyMatch(r->shared.getHash().equals(r.getTorrentHash())&&r.isRequested()&&!s.getSelected().containsKey(ReleasePolicy.episodeKey(r.getEpisode()))));
+        String unhealthy=transferHealth.assess(shared.getHash(),torrent,now,upgrade);
+        if(progress>=100||status.contains("checking")||status.contains("moving")||status.contains("queued")||status.startsWith("stopped")||status.startsWith("paused")||unhealthy==null&&now-shared.getLastProgressAt()<STALL_TIMEOUT)return;
         downloader.pause(pack);shared.setFailures(shared.getFailures()+1);shared.setRetryAt(now+Math.min(7L*24*60*60_000,RETRY_DELAY*(1L<<Math.min(8,shared.getFailures()-1))));
+        transferHealth.forget(shared.getHash());
         for(Show owner:state.getShows())for(Release r:owner.getReleases())if((r.isBatch()&&shared.getHash().equals(SimpleDownloader.hash(r))||shared.getHash().equals(r.getTorrentHash())&&r.isRequested())&&!"ready".equals(r.getStatus())) {
-            r.setStatus("waiting");r.setRetryAt(shared.getRetryAt());r.setError("共享合集暂无进展，已让出名额并延后重试");
+            r.setStatus("waiting");r.setRetryAt(shared.getRetryAt());r.setError(unhealthy==null?"共享合集暂无进展，已让出名额并延后重试":unhealthy+"；共享任务延后重试");
         }
         torrent.addProperty("state","stoppedDL");
     }
@@ -409,7 +458,10 @@ public class SimpleTrackingService {
         release.setDownloadPath(root.toString());
         release.setStatus("submitting");
         store.save(); // Persist the intent before talking to the download client.
-        downloader.add(release, root);
+        try {downloader.add(release, root);}
+        catch(DownloadConflictException e){release.setStatus("conflict");release.setRetryAt(0);release.setError(brief(e));store.save();throw e;}
+        if("ready".equals(release.getStatus())){store.save();return;}
+        transferHealth.forget(SimpleDownloader.hash(release));
         if(release.getFileIndex()>=0)downloader.filePriorities(state.getDownloads().get(SimpleDownloader.hash(release)));
         release.setStatus("downloading");
         release.setError("");
@@ -421,8 +473,10 @@ public class SimpleTrackingService {
     private void updateMessage(Show show,Settings settings) {
         if(show.getMessage().startsWith("资源检索失败")) return;
         long active=show.getReleases().stream().filter(r->Set.of("downloading","submitting").contains(r.getStatus())).count();
-        long waiting=show.getReleases().stream().filter(r->"waiting".equals(r.getStatus())).count();
-        long failed=show.getReleases().stream().filter(r->"error".equals(r.getStatus())).count();
+        List<String> retries=DownloadQueue.retries(show,settings);
+        long waiting=show.getReleases().stream().filter(r->retries.contains(r.getId())&&"waiting".equals(r.getStatus())).count();
+        long failed=show.getReleases().stream().filter(r->retries.contains(r.getId())&&"error".equals(r.getStatus())).count();
+        long conflicts=DownloadQueue.conflicts(show,settings).size();
         boolean allowed=show.getReleases().stream().anyMatch(r->ReleasePolicy.allowed(r,show,settings));
         String prefix="已发布 "+show.getSelected().size()+" 集 · ";
         if(!show.getCatalogIssue().isBlank()){show.setMessage(prefix+show.getCatalogIssue());return;}
@@ -431,6 +485,7 @@ public class SimpleTrackingService {
         else if(!ReleasePolicy.plan(show,settings).isEmpty()) show.setMessage(prefix+"排队中，等待下载名额");
         else if(waiting>0) show.setMessage(prefix+"资源暂无下载进展，已让出名额并定时重试");
         else if(failed>0) show.setMessage(prefix+"部分版本下载失败，定时重试；详情可查看原因");
+        else if(conflicts>0)show.setMessage(prefix+conflicts+" 个旧任务待核对，原任务未改动");
         else if(!allowed) show.setMessage(show.getReleases().isEmpty()?"暂无可识别的单集资源，等待发布或资源收录":"暂无明确标注中文字幕的可用版本，等待更新");
         else if(uncertain>0) show.setMessage(prefix+"部分资源集数待核对，已保留原件");
         else show.setMessage(prefix+(!show.getEpisodeIds().isEmpty()&&show.getSelected().keySet().containsAll(show.getEpisodeIds().keySet())?"本季正篇已补齐":"等待后续更新"));

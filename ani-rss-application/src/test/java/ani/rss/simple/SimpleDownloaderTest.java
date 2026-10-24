@@ -51,6 +51,15 @@ class SimpleDownloaderTest {
         Release release=new Release();release.setId("a".repeat(40));release.setMagnet("magnet:?xt=urn:btih:"+release.getId());
         assertThrows(java.io.IOException.class,()->downloader.add(release,root));assertFalse(bodies.containsKey("/api/v2/torrents/add"));
     }
+    @Test void completedForeignTaskIsCopiedWithoutAnySourceControlRequest() throws Exception {
+        Settings settings=settings("qbt_test");settings.setLibraryRoot(root.resolve("downloads/library").toString());settings.setDownloaderRoot("/downloads/library");downloader.connect(settings);
+        Path source=root.resolve("downloads/old/video.mkv");Files.createDirectories(source.getParent());Files.writeString(source,"video");
+        Release r=new Release();r.setId("a".repeat(40));
+        replies.put("/api/v2/torrents/info","[{\"hash\":\""+r.getId()+"\",\"category\":\"ani-rss\",\"save_path\":\"/downloads/old\",\"progress\":1,\"state\":\"stoppedUP\"}]");
+        replies.put("/api/v2/torrents/files","[{\"index\":0,\"name\":\"video.mkv\",\"progress\":1,\"size\":5}]");
+        assertEquals(SimpleDownloader.ExistingState.IMPORTED,downloader.reuseExisting(r,root.resolve("downloads/library/123/hash")));assertEquals("ready",r.getStatus());assertEquals(-1,Files.mismatch(source,Path.of(r.getVideoPath())));
+        for(String forbidden:List.of("add","start","resume","setLocation","setCategory","filePrio"))assertFalse(bodies.containsKey("/api/v2/torrents/"+forbidden),forbidden);
+    }
     @Test void incompleteFilesCannotBecomeReady() throws Exception {
         downloader.connect(settings("qbt_test"));Release release=new Release();release.setId("a".repeat(40));release.setDownloadPath(root.toString());
         Files.writeString(root.resolve("episode.mkv"),"video");replies.put("/api/v2/torrents/files","[{\"name\":\"episode.mkv\",\"progress\":0.5,\"size\":5}]");

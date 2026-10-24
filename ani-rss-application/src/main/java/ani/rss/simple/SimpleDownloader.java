@@ -43,6 +43,22 @@ public class SimpleDownloader implements AutoCloseable {
         return JsonParser.parseString(request("/api/v2/torrents/info?category=" + CATEGORY, null)).getAsJsonArray();
     }
     public static String hash(Release release){return release.getTorrentHash().isBlank()?release.getId():release.getTorrentHash();}
+    public enum ExistingState { MISSING, IMPORTED, OWNED, BLOCKED }
+    public ExistingState reuseExisting(Release release,Path path) throws IOException,InterruptedException {
+        JsonArray existing=JsonParser.parseString(request("/api/v2/torrents/info?hashes="+hash(release),null)).getAsJsonArray();
+        if(existing.isEmpty())return ExistingState.MISSING;
+        JsonObject task=existing.get(0).getAsJsonObject();
+        if(CATEGORY.equals(task.get("category").getAsString())&&DownloadPaths.equivalent(task.get("save_path").getAsString(),DownloadPaths.destination(settings,path)))return ExistingState.OWNED;
+        return importComplete(release,path,task)?ExistingState.IMPORTED:ExistingState.BLOCKED;
+    }
+    private boolean importComplete(Release release,Path path,JsonObject task) throws IOException,InterruptedException {
+        if(!task.has("progress")||task.get("progress").getAsDouble()<1)return false;
+        try {
+            boolean copied=ExistingResourceImporter.copy(settings,release,path,task,files(hash(release)),inspector);
+            if(copied)release.setImportedFrom(task.get("save_path").getAsString());
+            return copied;
+        } catch(IOException|IllegalArgumentException e){throw new DownloadConflictException("旧任务已完成，但暂不能安全复用："+e.getMessage(),e);}
+    }
     public JsonArray files(String hash) throws IOException,InterruptedException {return JsonParser.parseString(request("/api/v2/torrents/files?hash="+hash,null)).getAsJsonArray();}
     public void filePriorities(DownloadTask task) throws IOException,InterruptedException {
         if(task.getFiles().isEmpty())return;
@@ -59,8 +75,10 @@ public class SimpleDownloader implements AutoCloseable {
         for (JsonElement element : existing) {
             JsonObject task = element.getAsJsonObject();
             if (!CATEGORY.equals(task.get("category").getAsString()) ||
-                    !DownloadPaths.equivalent(task.get("save_path").getAsString(), remotePath))
-                throw new IOException("下载器中已有相同资源，但路径或分类不属于此资源库；请先处理现有任务");
+                    !DownloadPaths.equivalent(task.get("save_path").getAsString(), remotePath)) {
+                if(task.has("progress")&&task.get("progress").getAsDouble()>=1)throw new DownloadConflictException("旧任务已完成，等待后台校验并复制复用；原任务保持不变");
+                throw new DownloadConflictException("已有相同种子的旧任务尚未完成或正在校验；未移动、接管或重复提交，将定期检查并尝试其他版本");
+            }
             String state=task.has("state")?task.get("state").getAsString().toLowerCase(Locale.ROOT):"";
             if (state.startsWith("paused") || state.startsWith("stopped")) control(hash(release),"start","resume");
             return; // An earlier request may have succeeded before its response was lost.

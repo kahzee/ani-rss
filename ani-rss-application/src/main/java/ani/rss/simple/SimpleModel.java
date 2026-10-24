@@ -74,6 +74,8 @@ public final class SimpleModel {
         private String message = "等待检查资源";
         // Filled on public snapshots, one planned resource per episode, not every alternative.
         private List<String> queuedReleaseIds = new ArrayList<>();
+        private List<String> retryReleaseIds = new ArrayList<>();
+        private List<String> conflictReleaseIds = new ArrayList<>();
     }
 
     @Data
@@ -108,11 +110,13 @@ public final class SimpleModel {
         private long totalBytes;
         private long etaSeconds = -1;
         private int seeds;
+        private double availability = -1;
         private String downloadState = "";
         private long lastProgressAt;
         private long retryAt;
         private int failures;
         private String error = "";
+        private String importedFrom = "";
         // Snapshot of the paths installed into the playback directory, for recovery.
         private List<String> publishedFiles = new ArrayList<>();
     }

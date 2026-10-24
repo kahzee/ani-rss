@@ -34,6 +34,40 @@ class SimpleTrackingServiceTest {
     }
     private Release release(String id,String group,int ep) {Release r=new Release();r.setId(id);r.setGroup(group);r.setEpisode(ep);r.setChinese(true);r.setPublishedAt(1);r.setTitle("["+group+"] 测试番 - "+ep+" [CHS]");return r;}
 
+    @Test void legacyErrorsAreImportedWithoutSubmittingADownloadAndPublished() throws Exception {
+        SimpleStore store=configured();Show show=show(store,"123");Release legacy=release("legacy","首选",1);legacy.setStatus("error");legacy.setError("下载器中已有相同资源，但路径或分类不属于此资源库；请先处理现有任务");legacy.setRetryAt(Long.MAX_VALUE);show.getReleases().add(legacy);
+        Downloader dl=new Downloader(){@Override public ExistingState reuseExisting(Release r,Path path)throws java.io.IOException{Files.createDirectories(path);Path p=path.resolve("imported.mkv");Files.writeString(p,"legacy original");r.setVideoPath(p.toString());r.setDownloadPath(path.toString());r.setStatus("ready");return ExistingState.IMPORTED;}};
+        SimpleTrackingService service=new SimpleTrackingService(store,new Catalog(),dl);service.tick();
+        long deadline=System.currentTimeMillis()+2000;while(show.getSelected().isEmpty()&&System.currentTimeMillis()<deadline){Thread.sleep(10);service.tick();}
+        assertEquals("legacy",show.getSelected().get("1"));assertEquals("legacy original",Files.readString(Path.of(legacy.getPublishedFiles().getFirst())));assertTrue(dl.tasks.isEmpty());assertTrue(service.state().getShows().getFirst().getConflictReleaseIds().isEmpty());
+    }
+
+    @Test void externalConflictDoesNotOccupySlotOrBlockAlternative() throws Exception {
+        SimpleStore store=configured();store.state().getSettings().setSimultaneousDownloads(1);Show show=show(store,"1");Release foreign=release("foreign","首选",1),fallback=release("fallback","备选",1);show.getReleases().addAll(List.of(foreign,fallback));
+        Downloader dl=new Downloader(){@Override public void add(Release r,Path p)throws java.io.IOException{if(r.getId().equals("foreign"))throw new DownloadConflictException("旧任务未完成");super.add(r,p);}};
+        SimpleTrackingService service=new SimpleTrackingService(store,new Catalog(),dl);service.tick();service.tick();
+        assertEquals("conflict",foreign.getStatus());assertEquals(Set.of("fallback"),dl.tasks.keySet());Show snapshot=service.state().getShows().getFirst();assertEquals(List.of("foreign"),snapshot.getConflictReleaseIds());assertTrue(snapshot.getRetryReleaseIds().isEmpty());
+    }
+
+    @Test void slowLegacyCopyDoesNotHoldTheSchedulerOrStateResponse() throws Exception {
+        SimpleStore store=configured();Show show=show(store,"1");Release r=release("legacy","首选",1);r.setStatus("conflict");show.getReleases().add(r);
+        var entered=new java.util.concurrent.CountDownLatch(1);var finish=new java.util.concurrent.CountDownLatch(1);
+        Downloader dl=new Downloader(){@Override public ExistingState reuseExisting(Release release,Path path)throws InterruptedException{entered.countDown();finish.await();return ExistingState.BLOCKED;}};
+        SimpleTrackingService service=new SimpleTrackingService(store,new Catalog(),dl);
+        try {assertTimeoutPreemptively(java.time.Duration.ofSeconds(2),service::tick);assertTrue(entered.await(2,java.util.concurrent.TimeUnit.SECONDS));assertTimeoutPreemptively(java.time.Duration.ofSeconds(1),()->service.state());}
+        finally {finish.countDown();}
+        long deadline=System.currentTimeMillis()+2000;while(r.getRetryAt()==0&&System.currentTimeMillis()<deadline){Thread.sleep(10);service.tick();}
+        assertTrue(r.getRetryAt()>System.currentTimeMillis());assertEquals("conflict",r.getStatus());
+    }
+
+    @Test void tinyIntermittentGrowthYieldsToFallbackDespiteRecentPercentProgress() throws Exception {
+        SimpleStore store=configured();store.state().getSettings().setSimultaneousDownloads(1);Show show=show(store,"1");Release slow=release("slow","首选",1),fallback=release("fallback","备选",1);show.getReleases().addAll(List.of(slow,fallback));Downloader dl=new Downloader();SimpleTrackingService service=new SimpleTrackingService(store,new Catalog(),dl);service.tick();
+        JsonObject task=dl.tasks.get("slow");task.addProperty("completed",100_000_000);task.addProperty("num_seeds",0);task.addProperty("availability",0.203);
+        var field=SimpleTrackingService.class.getDeclaredField("transferHealth");field.setAccessible(true);TransferHealth health=(TransferHealth)field.get(service);health.assess("slow",task,System.currentTimeMillis()-TransferHealth.WINDOW-1000,false);
+        task.addProperty("completed",100_300_000);task.addProperty("progress",0.23);service.tick();
+        assertEquals("waiting",slow.getStatus());assertTrue(slow.getError().contains("缺少完整下载源"));assertEquals("stoppedDL",task.get("state").getAsString());assertTrue(dl.tasks.containsKey("fallback"));
+    }
+
     @Test void followsBackfillsUpgradesAndKeepsManualSelectionAcrossRestart() throws Exception {
         SimpleStore store=new SimpleStore(root.resolve("state.json"));
         Settings settings=store.state().getSettings(); settings.setLibraryRoot(root.resolve("library").toString());settings.setPlaybackRoot(root.resolve("playback").toString());settings.setDownloadHost("http://localhost");settings.setCredential("fake");settings.setTrustedGroups(List.of("首选","备选"));
