@@ -424,6 +424,7 @@ public class SimpleTrackingService {
                 }
                 if(!previous.equals(task.getRequestedFiles())||"downloading".equals(pack.getStatus())) {
                     task.setLastProgressAt(System.currentTimeMillis());task.setProgress(-1);task.setRetryAt(0);downloader.filePriorities(task);
+                    transferHealth.forget(task.getHash());
                 }
                 pack.setStatus("batch");pack.setError(candidates.isEmpty()?"合集文件尚不能明确对应本季正篇，已保留任务等待核对":"");
 
