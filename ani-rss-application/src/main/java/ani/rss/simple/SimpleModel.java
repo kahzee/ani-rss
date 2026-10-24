@@ -116,6 +116,8 @@ public final class SimpleModel {
         private long retryAt;
         private int failures;
         private String error = "";
+        private boolean idleProbe;
+        private long lastProbeAt;
         private String importedFrom = "";
         // Snapshot of the paths installed into the playback directory, for recovery.
         private List<String> publishedFiles = new ArrayList<>();

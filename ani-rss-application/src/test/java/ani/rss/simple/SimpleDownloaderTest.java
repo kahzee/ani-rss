@@ -21,6 +21,7 @@ class SimpleDownloaderTest {
     @BeforeEach void setup() throws Exception {
         server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         replies.put("/api/v2/auth/login","Ok.");replies.put("/api/v2/app/version","v5.0.0");replies.put("/api/v2/torrents/createCategory","");replies.put("/api/v2/torrents/info","[]");replies.put("/api/v2/torrents/add","Ok.");
+        replies.put("/api/v2/app/preferences","{\"save_path\":\"\"}");
         server.createContext("/",exchange->{String path=exchange.getRequestURI().getPath();bodies.put(path,new String(exchange.getRequestBody().readAllBytes(),StandardCharsets.UTF_8));authorization=exchange.getRequestHeaders().getFirst("Authorization");byte[] bytes=replies.getOrDefault(path,"[]").getBytes(StandardCharsets.UTF_8);exchange.sendResponseHeaders(200,bytes.length);exchange.getResponseBody().write(bytes);exchange.close();});server.start();
         downloader=new SimpleDownloader(new MediaInspector(video->"{\"streams\":[{\"codec_type\":\"video\",\"width\":1920,\"height\":1080}],\"format\":{\"duration\":24}}"));
     }
@@ -75,6 +76,28 @@ class SimpleDownloaderTest {
         downloader.connect(settings("qbt_test"));Release r=new Release();r.setId("a".repeat(40));r.setDownloadPath(root.toString());
         replies.put("/api/v2/torrents/info","[{\"category\":\"ani-rss-simple\",\"save_path\":\"/foreign\"}]");
         assertThrows(java.io.IOException.class,()->downloader.pause(r));assertFalse(bodies.containsKey("/api/v2/torrents/stop"));
+    }
+    @Test void automaticPauseRespectsManualStopAndForceStart() throws Exception {
+        downloader.connect(settings("qbt_test"));Release r=new Release();r.setId("a".repeat(40));r.setDownloadPath(root.toString());
+        for(String state:List.of("stoppedDL","forcedDL")) {
+            replies.put("/api/v2/torrents/info","[{\"category\":\"ani-rss-simple\",\"save_path\":\""+root.toString().replace("\\","\\\\")+"\",\"state\":\""+state+"\",\"force_start\":"+state.equals("forcedDL")+"}]");
+            assertThrows(java.io.IOException.class,()->downloader.pause(r));assertFalse(bodies.containsKey("/api/v2/torrents/stop"));
+        }
+    }
+    @Test void lowNasSpacePreventsSubmissionEvenIfTheLocalMountReportsFreeSpace() throws Exception {
+        Settings settings=settings("qbt_test");settings.setDownloaderRoot("/downloads/library");downloader.connect(settings);
+        replies.put("/api/v2/app/preferences","{\"save_path\":\"/downloads\"}");
+        replies.put("/api/v2/sync/maindata","{\"server_state\":{\"free_space_on_disk\":2000000000}}");
+        Release r=new Release();r.setId("a".repeat(40));r.setMagnet("magnet:?xt=urn:btih:"+r.getId());
+        java.io.IOException error=assertThrows(java.io.IOException.class,()->downloader.add(r,root.resolve("123/hash")));
+        assertTrue(error.getMessage().contains("5 GiB"));assertFalse(bodies.containsKey("/api/v2/torrents/add"));
+    }
+    @Test void anotherSaveVolumeIsNotBlockedByTheDefaultVolumesFreeSpace() throws Exception {
+        Settings settings=settings("qbt_test");settings.setDownloaderRoot("/other-volume/library");downloader.connect(settings);
+        replies.put("/api/v2/app/preferences","{\"save_path\":\"/downloads\"}");
+        replies.put("/api/v2/sync/maindata","{\"server_state\":{\"free_space_on_disk\":0}}");
+        Release r=new Release();r.setId("a".repeat(40));r.setMagnet("magnet:?xt=urn:btih:"+r.getId());
+        downloader.add(r,root.resolve("123/hash"));assertTrue(bodies.containsKey("/api/v2/torrents/add"));
     }
     @Test void completeVideoAndSidecarsBecomeReadyOnlyWhenLocallyVisible() throws Exception {
         downloader.connect(settings("qbt_test"));Release release=new Release();release.setId("a".repeat(40));release.setDownloadPath(root.toString());

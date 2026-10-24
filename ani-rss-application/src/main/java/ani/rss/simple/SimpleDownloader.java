@@ -24,6 +24,10 @@ public class SimpleDownloader implements AutoCloseable {
     public static final String CATEGORY = "ani-rss-simple";
     private HttpClient client;
     private Settings settings;
+    private long spaceCheckedAt;
+    private long availableBytes=-1;
+    private String spaceHost="",defaultSavePath="";
+    static final long MIN_FREE_SPACE=5L*1024*1024*1024;
 
     public void connect(Settings settings) throws IOException, InterruptedException {
         this.settings = settings;
@@ -49,6 +53,7 @@ public class SimpleDownloader implements AutoCloseable {
         if(existing.isEmpty())return ExistingState.MISSING;
         JsonObject task=existing.get(0).getAsJsonObject();
         if(CATEGORY.equals(task.get("category").getAsString())&&DownloadPaths.equivalent(task.get("save_path").getAsString(),DownloadPaths.destination(settings,path)))return ExistingState.OWNED;
+        ensureDownloadSpace(path);
         return importComplete(release,path,task)?ExistingState.IMPORTED:ExistingState.BLOCKED;
     }
     private boolean importComplete(Release release,Path path,JsonObject task) throws IOException,InterruptedException {
@@ -80,9 +85,12 @@ public class SimpleDownloader implements AutoCloseable {
                 throw new DownloadConflictException("已有相同种子的旧任务尚未完成或正在校验；未移动、接管或重复提交，将定期检查并尝试其他版本");
             }
             String state=task.has("state")?task.get("state").getAsString().toLowerCase(Locale.ROOT):"";
+            if(state.equals("error")||state.equals("missingfiles"))throw new IOException("下载器报告文件或磁盘错误，请修复存储问题后再重试");
+            if(task.has("progress")&&task.get("progress").getAsDouble()<1)ensureDownloadSpace(path);
             if (state.startsWith("paused") || state.startsWith("stopped")) control(hash(release),"start","resume");
             return; // An earlier request may have succeeded before its response was lost.
         }
+        ensureDownloadSpace(path);
         Files.createDirectories(path);
         String source = release.getTorrentUrl();
         if (source == null || source.isBlank()) source = release.getMagnet();
@@ -114,6 +122,7 @@ public class SimpleDownloader implements AutoCloseable {
         catch(IOException e){release.setStatus("invalid");release.setError(e.getMessage());throw e;}
         release.setStatus("ready");
         release.setProgress(100);
+        release.setFailures(0);
         release.setError("");
     }
 
@@ -125,6 +134,9 @@ public class SimpleDownloader implements AutoCloseable {
             JsonObject task=element.getAsJsonObject();
             if (!CATEGORY.equals(task.get("category").getAsString()) || !DownloadPaths.equivalent(task.get("save_path").getAsString(),remote))
                 throw new IOException("任务不属于此资源库，不能暂停");
+            String status=task.has("state")?task.get("state").getAsString().toLowerCase(Locale.ROOT):"";
+            if(status.startsWith("stopped")||status.startsWith("paused")||task.has("force_start")&&task.get("force_start").getAsBoolean())
+                throw new IOException("任务已由用户暂停或强制运行，保持用户选择");
             control(hash(release),"stop","pause");
         }
     }
@@ -135,6 +147,28 @@ public class SimpleDownloader implements AutoCloseable {
             if (!e.getMessage().contains("HTTP 404")) throw e;
             request("/api/v2/torrents/"+legacy,Map.of("hashes",hash));
         }
+    }
+
+    /** The Windows smart mount can report aggregate space, so use the downloader's own volume.
+     * Only apply this guard to resources under its default save directory, not unrelated mounts. */
+    private void ensureDownloadSpace(Path path) throws IOException,InterruptedException {
+        long now=System.currentTimeMillis();String host=settings.getDownloadHost();
+        if(!host.equals(spaceHost)||now-spaceCheckedAt>30_000) {
+            spaceCheckedAt=0;availableBytes=-1;
+            JsonObject prefs=JsonParser.parseString(request("/api/v2/app/preferences",null)).getAsJsonObject();
+            defaultSavePath=prefs.has("save_path")?DownloadPaths.normalizeRemote(prefs.get("save_path").getAsString()):"";
+            if(!defaultSavePath.isBlank()) {
+                JsonObject data=JsonParser.parseString(request("/api/v2/sync/maindata?rid=0",null)).getAsJsonObject();
+                JsonObject server=data.has("server_state")?data.getAsJsonObject("server_state"):null;
+                if(server!=null&&server.has("free_space_on_disk"))availableBytes=server.get("free_space_on_disk").getAsLong();
+            }
+            spaceHost=host;spaceCheckedAt=now;
+        }
+        if(defaultSavePath.isBlank())return;
+        String remote=DownloadPaths.normalizeRemote(DownloadPaths.destination(settings,path));
+        if(!remote.equals(defaultSavePath)&&!remote.startsWith(defaultSavePath.endsWith("/")?defaultSavePath:defaultSavePath+"/"))return;
+        if(availableBytes>=0&&availableBytes<MIN_FREE_SPACE)
+            throw new IOException(String.format(Locale.ROOT,"下载盘可用空间仅 %.1f GiB，低于 5 GiB 保留空间；已停止新增下载及导入，请先处理 NAS 存储",availableBytes/(1024d*1024*1024)));
     }
 
     private String request(String path, Map<String, String> form) throws IOException, InterruptedException {

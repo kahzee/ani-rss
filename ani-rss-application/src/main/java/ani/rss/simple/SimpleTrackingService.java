@@ -30,12 +30,12 @@ public class SimpleTrackingService {
     }
     private final AtomicBoolean running = new AtomicBoolean();
     private volatile boolean forceCatalog;
-    private static final long STALL_TIMEOUT = 10 * 60_000L;
     private static final long RETRY_DELAY = 30 * 60_000L;
     private record TransferSnapshot(JsonArray tasks,Map<String,JsonArray> files,long checkedAt) {}
     private volatile TransferSnapshot transfers;
     private volatile Settings progressSettings;
     private final TransferHealth transferHealth=new TransferHealth();
+    private final IdleRetryQueue idleRetries=new IdleRetryQueue();
     private record ReuseResult(SimpleDownloader.ExistingState state,Release copy,String error) {}
     private final Map<String,java.util.concurrent.CompletableFuture<ReuseResult>> reuseJobs=new LinkedHashMap<>();
 
@@ -50,7 +50,7 @@ public class SimpleTrackingService {
         }
         for(Show show:snapshot.getShows()) {
             show.setMissingEpisodes(show.getEpisodeIds().keySet().stream().filter(ep->!show.getSelected().containsKey(ep)).toList());
-            if(show.isEnabled())show.setQueuedReleaseIds(ReleasePolicy.plan(show,snapshot.getSettings()).stream().map(Release::getId).toList());
+            if(show.isEnabled())show.setQueuedReleaseIds(ReleasePolicy.plan(show,snapshot.getSettings()).stream().filter(r->"available".equals(r.getStatus())).map(Release::getId).toList());
             show.setRetryReleaseIds(DownloadQueue.retries(show,snapshot.getSettings()));
             show.setConflictReleaseIds(DownloadQueue.conflicts(show,snapshot.getSettings()));
         }
@@ -296,6 +296,12 @@ public class SimpleTrackingService {
                     }
                     release.setProgress(progress);
                     String taskState=task.get("state").getAsString().toLowerCase(Locale.ROOT);
+                    if(taskState.equals("error")||taskState.equals("missingfiles")) {
+                        transferHealth.forget(SimpleDownloader.hash(release));
+                        if(!"error".equals(release.getStatus()))release.setRetryAt(now+RETRY_DELAY);
+                        release.setStatus("error");release.setError("下载器报告文件或磁盘错误，请检查 NAS 存储和下载器日志；这不是缺种等待");
+                        continue;
+                    }
                     boolean stopped=taskState.startsWith("stopped") || taskState.startsWith("paused");
                     if (stopped && progress<100) {
                         transferHealth.forget(SimpleDownloader.hash(release));
@@ -303,14 +309,17 @@ public class SimpleTrackingService {
                     } else {
                         release.setStatus("downloading");
                         String unhealthy=release.getFileIndex()<0?transferHealth.assess(SimpleDownloader.hash(release),task,now,show.getSelected().containsKey(ReleasePolicy.episodeKey(release.getEpisode()))):null;
-                        if (release.getFileIndex()<0 && show.isEnabled() && progress<100 && !taskState.contains("checking") && !taskState.contains("moving")
-                                && !taskState.contains("queued") && (unhealthy!=null||now-release.getLastProgressAt()>=STALL_TIMEOUT)) {
+                        boolean rotate=release.getFileIndex()<0&&idleShouldRotate(state,release,task,tasks,now);
+                        if (release.getFileIndex()<0 && show.isEnabled() && (rotate || unhealthy!=null
+                                && DownloadQueue.canYield(state,SimpleDownloader.hash(release),tasks,now))) {
                             try {
                                 downloader.pause(release);
                                 transferHealth.forget(SimpleDownloader.hash(release));
+                                idleRetries.forget(SimpleDownloader.hash(release));
                                 task.addProperty("state","stoppedDL");
-                                release.setStatus("waiting");release.setFailures(release.getFailures()+1);release.setRetryAt(now+Math.min(7L*24*60*60_000,RETRY_DELAY*(1L<<Math.min(8,release.getFailures()-1))));
-                                release.setError((unhealthy==null?"10 分钟没有下载进展，已让出名额":unhealthy)+"；下次检查 "+new java.text.SimpleDateFormat("MM-dd HH:mm").format(new Date(release.getRetryAt())));
+                                release.setStatus("waiting");release.setFailures(release.getFailures()+1);release.setRetryAt(RetryBackoff.nextAt(now,release.getFailures()));
+                                markAttempt(state,SimpleDownloader.hash(release),now);
+                                release.setError((rotate?"空闲试跑连续 3 分钟新增不足 64 KiB，轮换其他任务":unhealthy)+"；下次检查 "+new java.text.SimpleDateFormat("MM-dd HH:mm").format(new Date(release.getRetryAt())));
                             } catch(Exception e) {release.setError("暂停无进展任务失败："+brief(e));}
                         }
                     }
@@ -319,8 +328,10 @@ public class SimpleTrackingService {
                         catch (Exception e) { release.setError(brief(e)); }
                     }
                 } else if (task == null && Set.of("downloading", "submitting").contains(release.getStatus())) {
+                    if(now-release.getLastProgressAt()<2*60_000L)continue;
                     release.setStatus("error");
-                    release.setError("下载任务不存在，将重新提交");
+                    release.setFailures(release.getFailures()+1);release.setRetryAt(RetryBackoff.nextAt(now,release.getFailures()));
+                    release.setError("提交后仍未出现下载任务，可能是种子文件获取失败；已延后重试");
                 }
             }
             if (!show.isEnabled()) { show.setMessage("已暂停自动追番，资源和播放文件均保留"); continue; }
@@ -346,6 +357,7 @@ public class SimpleTrackingService {
         while(active<settings.getSimultaneousDownloads()) {
             record Candidate(Show show,Release release) {}
             Candidate next=eligibleShows.stream().flatMap(s->ReleasePolicy.plan(s,settings).stream().map(r->new Candidate(s,r)))
+                    .filter(c->!IdleRetryQueue.retryCandidate(c.release()))
                     .filter(c->!attempted.contains(c.release().getId()))
                     .min(Comparator.comparingInt((Candidate c)->c.show().getSelected().containsKey(ReleasePolicy.episodeKey(c.release().getEpisode()))?1:0)
                             .thenComparingLong(c->c.show().getLastQueuedAt())
@@ -355,6 +367,23 @@ public class SimpleTrackingService {
             try {submit(next.show(),next.release());if(!"ready".equals(next.release().getStatus()))active++;}
             catch(Exception e) {next.release().setStatus(e instanceof DownloadConflictException?"conflict":"error");next.release().setRetryAt(e instanceof DownloadConflictException?0:now+RETRY_DELAY);next.release().setError(brief(e));}
             store.save();
+        }
+        Set<String> activeHashes=IdleRetryQueue.activeHashes(tasks);
+        // Include tasks submitted in this tick, which are not yet present in the qBittorrent snapshot.
+        for(Show show:state.getShows())for(Release r:show.getReleases())if(Set.of("downloading","submitting").contains(r.getStatus()))activeHashes.add(SimpleDownloader.hash(r).toLowerCase(Locale.ROOT));
+        Set<String> probes=IdleRetryQueue.probeHashes(state);
+        if(probes.containsAll(activeHashes)) {
+            Set<String> tried=new HashSet<>();
+            int limit=Math.min(IdleRetryQueue.LIMIT,settings.getSimultaneousDownloads());
+            while(activeHashes.size()<limit && tried.size()<limit) {
+                var options=IdleRetryQueue.candidates(state,recoveryFailed,activeHashes,tried,now);
+                if(options.isEmpty())break;
+                var candidate=options.getFirst();Release r=candidate.release();String hash=SimpleDownloader.hash(r).toLowerCase(Locale.ROOT);
+                tried.add(hash);r.setLastProbeAt(now);
+                try {submit(candidate.show(),r,true);if(!"ready".equals(r.getStatus()))activeHashes.add(hash);}
+                catch(Exception e){r.setIdleProbe(false);r.setStatus(e instanceof DownloadConflictException?"conflict":"error");r.setRetryAt(e instanceof DownloadConflictException?0:now+RETRY_DELAY);r.setError(brief(e));}
+                store.save();
+            }
         }
         for(Show show:eligibleShows) updateMessage(show,settings);
         store.save();
@@ -407,7 +436,7 @@ public class SimpleTrackingService {
             if(!active && !"downloading".equals(pack.getStatus()))continue;
             JsonArray response=responses.get(task.getHash());
             try {
-                if(checked.add(task.getHash()))checkSharedStall(state,task,pack,torrent);
+                if(checked.add(task.getHash()))checkSharedStall(state,task,pack,torrent,torrents);
                 if(task.getRetryAt()>System.currentTimeMillis())continue;
                 if(response==null){response=downloader.files(task.getHash());responses.put(task.getHash(),response);task.setFiles(BatchMapper.files(response));}
                 if(task.getFiles().isEmpty())continue; // Magnet metadata has not arrived yet.
@@ -419,7 +448,7 @@ public class SimpleTrackingService {
                     Release current=show.getReleases().stream().filter(v->v.getId().equals(show.getSelected().get(ReleasePolicy.episodeKey(candidate.getEpisode())))).findFirst().orElse(null);
                     boolean busy=show.getReleases().stream().anyMatch(v->!v.isBatch()&&v.getTorrentHash().isBlank()&&v.getEpisode()==candidate.getEpisode()&&Set.of("downloading","submitting").contains(v.getStatus()));
                     if(show.isEnabled()&&!busy&&!show.getPinnedEpisodes().contains(ReleasePolicy.episodeKey(r.getEpisode()))&&ReleasePolicy.allowed(r,show,state.getSettings())&&ReleasePolicy.better(r,current,show,state.getSettings())&& !"invalid".equals(r.getStatus())) {
-                        r.setRequested(true);if(!"ready".equals(r.getStatus()))r.setStatus("downloading");task.getRequestedFiles().add(r.getFileIndex());task.getRequestedFiles().addAll(r.getSubtitleIndices());
+                        r.setRequested(true);r.setIdleProbe(IdleRetryQueue.probeHashes(state).contains(task.getHash().toLowerCase(Locale.ROOT)));if(!"ready".equals(r.getStatus()))r.setStatus("downloading");task.getRequestedFiles().add(r.getFileIndex());task.getRequestedFiles().addAll(r.getSubtitleIndices());
                     }
                 }
                 if(!previous.equals(task.getRequestedFiles())||"downloading".equals(pack.getStatus())) {
@@ -433,23 +462,35 @@ public class SimpleTrackingService {
         return responses;
     }
 
-    private void checkSharedStall(State state,DownloadTask shared,Release pack,JsonObject torrent) throws Exception {
+    private void checkSharedStall(State state,DownloadTask shared,Release pack,JsonObject torrent,JsonArray torrents) throws Exception {
         long now=System.currentTimeMillis();double progress=torrent.get("progress").getAsDouble()*100;
         String status=torrent.get("state").getAsString().toLowerCase(Locale.ROOT);
+        if(status.equals("error")||status.equals("missingfiles")) {
+            if(shared.getRetryAt()<=now)shared.setRetryAt(now+RETRY_DELAY);
+            for(Show owner:state.getShows())for(Release r:owner.getReleases())if((r.isBatch()&&shared.getHash().equals(SimpleDownloader.hash(r))||shared.getHash().equals(r.getTorrentHash())&&r.isRequested())&&!"ready".equals(r.getStatus())) {
+                r.setStatus("error");r.setRetryAt(shared.getRetryAt());r.setError("下载器报告共享合集文件或磁盘错误，请先修复 NAS 存储");
+            }
+            transferHealth.forget(shared.getHash());return;
+        }
         if(shared.getLastProgressAt()==0||progress!=shared.getProgress()||status.contains("checking")||status.contains("moving"))shared.setLastProgressAt(now);
         shared.setProgress(progress);
         boolean upgrade=state.getShows().stream().noneMatch(s->s.getReleases().stream().anyMatch(r->shared.getHash().equals(r.getTorrentHash())&&r.isRequested()&&!s.getSelected().containsKey(ReleasePolicy.episodeKey(r.getEpisode()))));
         String unhealthy=transferHealth.assess(shared.getHash(),torrent,now,upgrade);
-        if(progress>=100||status.contains("checking")||status.contains("moving")||status.contains("queued")||status.startsWith("stopped")||status.startsWith("paused")||unhealthy==null&&now-shared.getLastProgressAt()<STALL_TIMEOUT)return;
-        downloader.pause(pack);shared.setFailures(shared.getFailures()+1);shared.setRetryAt(now+Math.min(7L*24*60*60_000,RETRY_DELAY*(1L<<Math.min(8,shared.getFailures()-1))));
+        boolean rotate=idleShouldRotate(state,pack,torrent,torrents,now);
+        if(!rotate&&(unhealthy==null||!DownloadQueue.canYield(state,shared.getHash(),torrents,now)))return;
+        downloader.pause(pack);shared.setFailures(shared.getFailures()+1);shared.setRetryAt(RetryBackoff.nextAt(now,shared.getFailures()));
         transferHealth.forget(shared.getHash());
+        idleRetries.forget(shared.getHash());
         for(Show owner:state.getShows())for(Release r:owner.getReleases())if((r.isBatch()&&shared.getHash().equals(SimpleDownloader.hash(r))||shared.getHash().equals(r.getTorrentHash())&&r.isRequested())&&!"ready".equals(r.getStatus())) {
-            r.setStatus("waiting");r.setRetryAt(shared.getRetryAt());r.setError(unhealthy==null?"共享合集暂无进展，已让出名额并延后重试":unhealthy+"；共享任务延后重试");
+            r.setStatus("waiting");r.setLastProbeAt(now);r.setRetryAt(shared.getRetryAt());r.setError((rotate?"空闲试跑连续 3 分钟新增不足 64 KiB，轮换其他任务":unhealthy)+"；共享任务延后重试");
         }
         torrent.addProperty("state","stoppedDL");
     }
 
     private void submit(Show show, Release release) throws Exception {
+        submit(show,release,false);
+    }
+    private void submit(Show show, Release release,boolean idleProbe) throws Exception {
         State state=store.state();Path root = PlaybackLibrary.resourceDirectory(state.getSettings(),show,release);
         if(release.isBatch()||release.getFileIndex()>=0){
             String pathName=root.toString();DownloadTask task=state.getDownloads().computeIfAbsent(SimpleDownloader.hash(release),hash->{DownloadTask t=new DownloadTask();t.setHash(hash);t.setPath(pathName);return t;});
@@ -457,18 +498,39 @@ public class SimpleTrackingService {
             if(release.getFileIndex()>=0){task.getRequestedFiles().add(release.getFileIndex());task.getRequestedFiles().addAll(release.getSubtitleIndices());}
         }
         release.setDownloadPath(root.toString());
+        release.setIdleProbe(idleProbe);
+        markAttempt(state,SimpleDownloader.hash(release),System.currentTimeMillis());
+        for(Show owner:state.getShows())for(Release r:owner.getReleases())if(SimpleDownloader.hash(release).equalsIgnoreCase(SimpleDownloader.hash(r)))r.setIdleProbe(idleProbe);
         release.setStatus("submitting");
         store.save(); // Persist the intent before talking to the download client.
         try {downloader.add(release, root);}
         catch(DownloadConflictException e){release.setStatus("conflict");release.setRetryAt(0);release.setError(brief(e));store.save();throw e;}
         if("ready".equals(release.getStatus())){store.save();return;}
         transferHealth.forget(SimpleDownloader.hash(release));
+        idleRetries.forget(SimpleDownloader.hash(release));
         if(release.getFileIndex()>=0)downloader.filePriorities(state.getDownloads().get(SimpleDownloader.hash(release)));
         release.setStatus("downloading");
         release.setError("");
         release.setLastProgressAt(System.currentTimeMillis());
         release.setRetryAt(0);
         show.setLastQueuedAt(System.currentTimeMillis());
+    }
+
+    private boolean idleShouldRotate(State state,Release release,JsonObject task,JsonArray tasks,long now) {
+        String hash=SimpleDownloader.hash(release);
+        boolean probe=IdleRetryQueue.probeHashes(state).contains(hash.toLowerCase(Locale.ROOT));
+        // A stalled normal queue must not prevent idle retries forever merely by occupying slots.
+        boolean allIdle=true;
+        Set<String> active=IdleRetryQueue.activeHashes(tasks);
+        for(JsonElement element:tasks){JsonObject t=element.getAsJsonObject();
+            if(active.contains(t.get("hash").getAsString().toLowerCase(Locale.ROOT))
+                    &&t.has("dlspeed")&&t.get("dlspeed").getAsLong()>0){allIdle=false;break;}}
+        if(!probe&&!allIdle){idleRetries.forget(hash);return false;}
+        boolean stalled=idleRetries.stalled(hash,task,now);
+        return stalled&&!IdleRetryQueue.candidates(state,Set.of(),IdleRetryQueue.activeHashes(tasks),Set.of(),now).isEmpty();
+    }
+    private static void markAttempt(State state,String hash,long now) {
+        for(Show owner:state.getShows())for(Release r:owner.getReleases())if(hash.equalsIgnoreCase(SimpleDownloader.hash(r)))r.setLastProbeAt(now);
     }
 
     private void updateMessage(Show show,Settings settings) {
@@ -483,7 +545,7 @@ public class SimpleTrackingService {
         if(!show.getCatalogIssue().isBlank()){show.setMessage(prefix+show.getCatalogIssue());return;}
         long uncertain=show.getReleases().stream().filter(r->!r.getNumberingIssue().isBlank()).count();
         if(active>0) show.setMessage(prefix+active+" 个版本正在下载");
-        else if(!ReleasePolicy.plan(show,settings).isEmpty()) show.setMessage(prefix+"排队中，等待下载名额");
+        else if(ReleasePolicy.plan(show,settings).stream().anyMatch(r->"available".equals(r.getStatus()))) show.setMessage(prefix+"排队中，等待下载名额");
         else if(waiting>0) show.setMessage(prefix+"资源暂无下载进展，已让出名额并定时重试");
         else if(failed>0) show.setMessage(prefix+"部分版本下载失败，定时重试；详情可查看原因");
         else if(conflicts>0)show.setMessage(prefix+conflicts+" 个旧任务待核对，原任务未改动");
@@ -546,7 +608,7 @@ public class SimpleTrackingService {
         for (JsonElement element : tasks) {
             JsonObject task=element.getAsJsonObject();
             String status=task.has("state")?task.get("state").getAsString().toLowerCase(Locale.ROOT):"";
-            if (task.get("progress").getAsDouble() < 1 && !status.startsWith("paused") && !status.startsWith("stopped")) count++;
+            if (task.get("progress").getAsDouble() < 1 && !status.startsWith("paused") && !status.startsWith("stopped")&&!status.equals("error")&&!status.equals("missingfiles")) count++;
         }
         return count;
     }

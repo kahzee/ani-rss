@@ -18,6 +18,7 @@
     <div v-if="tab === 'following'" class="show-grid">
       <section v-if="activeDownloads.length || pendingDownloads.length || conflictDownloads.length" class="download-overview" aria-label="下载进度">
         <div class="download-heading"><div><h2>下载进度</h2><p>{{ activeDownloads.length }} 个下载中 · {{ queuedDownloads.length }} 个排队<span v-if="retryDownloads.length"> · {{ retryDownloads.length }} 个待重试</span><span v-if="activeDownloads.length"> · {{ formatBytes(totalSpeed) }}/s</span></p></div><span class="sync-time">每 10 秒更新<span v-if="state.downloadCheckedAt"> · 最近 {{ new Date(state.downloadCheckedAt).toLocaleTimeString('zh-CN', {hour12:false}) }}</span></span></div>
+        <p v-if="retryDownloads.length || activeDownloads.some(item => item.release.idleProbe)" class="hint">空闲时最多同时试跑 3 个待重试种子；连续 3 分钟几乎无新增数据时轮换。磁盘与文件错误需先恢复，不提前重试。</p>
         <div v-for="item in activeDownloads" :key="item.release.id" class="transfer-row">
           <div class="transfer-title"><el-button link type="primary" @click="openDetail(item.show.id)">{{ item.show.title }} · {{ episodeLabel(item.release) }}</el-button><span>{{ item.release.group }} · {{ downloadKind(item) }}</span></div>
           <el-progress :percentage="percentage(item.release)" :stroke-width="8"/>
@@ -123,7 +124,7 @@ const transferSpeed = release => release.torrentHash ? release.taskDownloadSpeed
 const episodeLabel = release => release.batch ? '合集元数据' : `第 ${release.episode} 集`
 const totalSpeed = computed(() => [...new Map(activeDownloads.value.map(item=>[item.release.torrentHash || item.release.id,transferSpeed(item.release)])).values()].reduce((a,b)=>a+b,0))
 const percentage = release => Math.max(0,Math.min(100,Math.round((release.progress || 0)*10)/10))
-const downloadKind = item => item.show.selected[String(item.release.episode)] ? '版本升级' : '补齐'
+const downloadKind = item => (item.release.idleProbe ? '空闲试跑 · ' : '') + (item.show.selected[String(item.release.episode)] ? '版本升级' : '补齐')
 function formatBytes(value=0) {const n=Math.max(0,Number(value)||0);const units=['B','KB','MB','GB','TB'];const i=Math.min(4,n>0?Math.floor(Math.log(n)/Math.log(1024)):0);return `${(n/1024**i).toFixed(i ? 1 : 0)} ${units[i]}`}
 function transferState(release) {
   const s=(release.downloadState || '').toLowerCase()
