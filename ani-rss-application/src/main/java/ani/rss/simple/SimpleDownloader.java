@@ -42,17 +42,27 @@ public class SimpleDownloader implements AutoCloseable {
     public JsonArray tasks() throws IOException, InterruptedException {
         return JsonParser.parseString(request("/api/v2/torrents/info?category=" + CATEGORY, null)).getAsJsonArray();
     }
+    public static String hash(Release release){return release.getTorrentHash().isBlank()?release.getId():release.getTorrentHash();}
+    public JsonArray files(String hash) throws IOException,InterruptedException {return JsonParser.parseString(request("/api/v2/torrents/files?hash="+hash,null)).getAsJsonArray();}
+    public void filePriorities(DownloadTask task) throws IOException,InterruptedException {
+        if(task.getFiles().isEmpty())return;
+        JsonArray own=JsonParser.parseString(request("/api/v2/torrents/info?hashes="+task.getHash(),null)).getAsJsonArray();
+        if(own.size()!=1 || !CATEGORY.equals(own.get(0).getAsJsonObject().get("category").getAsString()) || !DownloadPaths.equivalent(own.get(0).getAsJsonObject().get("save_path").getAsString(),DownloadPaths.destination(settings,Path.of(task.getPath()))))throw new IOException("共享任务路径或分类不属于此资源库，拒绝修改文件优先级");
+        String all=task.getFiles().stream().map(f->Integer.toString(f.getIndex())).collect(java.util.stream.Collectors.joining("|"));
+        request("/api/v2/torrents/filePrio",Map.of("hash",task.getHash(),"id",all,"priority","0"));
+        if(!task.getRequestedFiles().isEmpty())request("/api/v2/torrents/filePrio",Map.of("hash",task.getHash(),"id",task.getRequestedFiles().stream().map(String::valueOf).collect(java.util.stream.Collectors.joining("|")),"priority","1"));
+    }
 
     public void add(Release release, Path path) throws IOException, InterruptedException {
         String remotePath = DownloadPaths.destination(settings, path);
-        JsonArray existing = JsonParser.parseString(request("/api/v2/torrents/info?hashes=" + release.getId(), null)).getAsJsonArray();
+        JsonArray existing = JsonParser.parseString(request("/api/v2/torrents/info?hashes=" + hash(release), null)).getAsJsonArray();
         for (JsonElement element : existing) {
             JsonObject task = element.getAsJsonObject();
             if (!CATEGORY.equals(task.get("category").getAsString()) ||
                     !DownloadPaths.equivalent(task.get("save_path").getAsString(), remotePath))
                 throw new IOException("下载器中已有相同资源，但路径或分类不属于此资源库；请先处理现有任务");
             String state=task.has("state")?task.get("state").getAsString().toLowerCase(Locale.ROOT):"";
-            if (state.startsWith("paused") || state.startsWith("stopped")) control(release.getId(),"start","resume");
+            if (state.startsWith("paused") || state.startsWith("stopped")) control(hash(release),"start","resume");
             return; // An earlier request may have succeeded before its response was lost.
         }
         Files.createDirectories(path);
@@ -64,11 +74,12 @@ public class SimpleDownloader implements AutoCloseable {
     }
 
     public void checkFinished(Release release) throws IOException, InterruptedException {
-        JsonArray files = JsonParser.parseString(request("/api/v2/torrents/files?hash=" + release.getId(), null)).getAsJsonArray();
+        JsonArray files = files(hash(release));
         List<Path> videos = new ArrayList<>();
         List<String> subtitles = new ArrayList<>();
         for (JsonElement element : files) {
             JsonObject file = element.getAsJsonObject();
+            if(release.getFileIndex()>=0 && (!file.has("index") || file.get("index").getAsInt()!=release.getFileIndex()&&!release.getSubtitleIndices().contains(file.get("index").getAsInt())))continue;
             Path path = PlaybackLibrary.inside(Path.of(release.getDownloadPath()), file.get("name").getAsString());
             String extension = PlaybackLibrary.extension(path);
             if (!PlaybackLibrary.VIDEO.contains(extension) && !PlaybackLibrary.SUBTITLE.contains(extension)) continue;
@@ -91,12 +102,12 @@ public class SimpleDownloader implements AutoCloseable {
     /** Only suspend tasks whose category AND save path belong to this resource. Keep partial data. */
     public void pause(Release release) throws IOException, InterruptedException {
         String remote=DownloadPaths.destination(settings,Path.of(release.getDownloadPath()));
-        JsonArray tasks=JsonParser.parseString(request("/api/v2/torrents/info?hashes="+release.getId(),null)).getAsJsonArray();
+        JsonArray tasks=JsonParser.parseString(request("/api/v2/torrents/info?hashes="+hash(release),null)).getAsJsonArray();
         for(JsonElement element:tasks) {
             JsonObject task=element.getAsJsonObject();
             if (!CATEGORY.equals(task.get("category").getAsString()) || !DownloadPaths.equivalent(task.get("save_path").getAsString(),remote))
                 throw new IOException("任务不属于此资源库，不能暂停");
-            control(release.getId(),"stop","pause");
+            control(hash(release),"stop","pause");
         }
     }
 

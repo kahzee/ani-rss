@@ -24,7 +24,7 @@ public final class EpisodeNumbers {
     private static void add(Map<String,Double> aliases,Set<String> ambiguous,String key,double value) {
         Double old=aliases.putIfAbsent(key,value);if(old!=null && old!=value) ambiguous.add(key);
     }
-    public static void apply(Show show) {show.getReleases().forEach(r->apply(show,r));}
+    public static void apply(Show show) {show.getReleases().stream().filter(r->!r.isBatch()).forEach(r->apply(show,r));}
     public static void apply(Show show,Release release) {
         if(release.getSourceEpisode()==null) release.setSourceEpisode(release.getEpisode());
         double raw=release.getSourceEpisode();release.setNumberingIssue("");
@@ -35,9 +35,10 @@ public final class EpisodeNumbers {
             canonical=Double.valueOf(explicit.group(2));
         } else if(!show.getEpisodeNumbers().isEmpty()) canonical=show.getEpisodeNumbers().get(ReleasePolicy.episodeKey(raw));
         else if(show.getSeason()==1) canonical=raw;
-        if(canonical==null || canonical<=0 || show.getTotalEpisodes()>0 && canonical>show.getTotalEpisodes()) {
+        if(canonical==null || canonical<=0 || (!show.getEpisodeIds().isEmpty()?!show.getEpisodeIds().containsKey(ReleasePolicy.episodeKey(canonical)):show.getTotalEpisodes()>0 && canonical>show.getTotalEpisodes())) {
             release.setNumberingIssue("集数尚未与本季目录对应，保留资源等待核对（发布编号 "+ReleasePolicy.episodeKey(raw)+"）");return;
         }
         release.setEpisode(canonical);
+        release.setEpisodeId(show.getEpisodeIds().getOrDefault(ReleasePolicy.episodeKey(canonical),""));
     }
 }

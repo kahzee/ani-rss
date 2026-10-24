@@ -141,4 +141,62 @@ class SimpleTrackingServiceTest {
         synchronized(service){java.util.concurrent.CompletableFuture.runAsync(service::pollProgress).get(2,java.util.concurrent.TimeUnit.SECONDS);}
         assertTrue(service.state().getDownloadCheckedAt()>0);
     }
+    @Test void oneSharedTorrentFillsOnlyFourMissingEpisodesAndSurvivesRestart() throws Exception {
+        SimpleStore store=configured();Show show=show(store,"123");show.setTotalEpisodes(12);
+        for(int ep=1;ep<=12;ep++){show.getEpisodeNumbers().put(""+ep,(double)ep);show.getEpisodeIds().put(""+ep,"ep-"+ep);}
+        PlaybackLibrary library=new PlaybackLibrary(root.resolve("simple-playback"));
+        for(int ep=1;ep<=8;ep++){
+            Release r=release("existing"+ep,"首选",ep);r.setStatus("ready");Path dir=root.resolve("library/123/"+r.getId());Files.createDirectories(dir);Path video=dir.resolve("old.mkv");Files.writeString(video,"old"+ep);r.setVideoPath(video.toString());r.setDownloadPath(dir.toString());show.getReleases().add(r);r.setPublishedFiles(library.publish(store.state().getSettings(),show,r));show.getSelected().put(""+ep,r.getId());
+        }
+        Release pack=release("a".repeat(40),"备选",0);pack.setBatch(true);pack.setTitle("历史番全集 [CHS]");show.getReleases().add(pack);
+        class Shared extends Downloader {
+            int adds;Set<Integer> priorities=Set.of();boolean finished;
+            @Override public void add(Release r,Path p) throws java.io.IOException{adds++;super.add(r,p);}
+            @Override public JsonArray files(String hash){JsonArray rows=new JsonArray();for(int i=1;i<=12;i++){JsonObject f=new JsonObject();f.addProperty("index",100+i);f.addProperty("name",String.format("S01E%02d.mkv",i));f.addProperty("progress",finished?1:0);f.addProperty("size",5);rows.add(f);}return rows;}
+            @Override public void filePriorities(DownloadTask task){priorities=new HashSet<>(task.getRequestedFiles());}
+            @Override public void checkFinished(Release r){r.setVideoPath(Path.of(r.getDownloadPath()).resolve(String.format("S01E%02d.mkv",(int)r.getEpisode())).toString());r.setStatus("ready");r.setProgress(100);}
+        }
+        Shared dl=new Shared();SimpleTrackingService service=new SimpleTrackingService(store,new Catalog(),dl);service.tick();service.tick();
+        assertEquals(1,dl.adds);assertEquals(Set.of(109,110,111,112),dl.priorities);assertEquals(1,store.state().getDownloads().size());
+        Path shared=Path.of(store.state().getDownloads().get(pack.getId()).getPath());
+        for(int ep=9;ep<=12;ep++)Files.writeString(shared.resolve(String.format("S01E%02d.mkv",ep)),"new"+ep);
+        dl.finished=true;dl.tasks.get(pack.getId()).addProperty("progress",1);service.tick();assertEquals(12,show.getSelected().size());
+        for(int ep=1;ep<=8;ep++)assertEquals("existing"+ep,show.getSelected().get(""+ep));
+        SimpleStore restarted=new SimpleStore(root.resolve("state.json"));new SimpleTrackingService(restarted,new Catalog(),dl).tick();assertEquals(1,dl.adds);assertEquals(12,restarted.state().getShows().getFirst().getSelected().size());
+    }
+    @Test void batchWithoutMagnetMetadataTimesOutAndDoesNotOccupySlotsForever() throws Exception {
+        SimpleStore store=configured();Show s=show(store,"123");s.getEpisodeIds().put("1","ep1");s.getEpisodeNumbers().put("1",1d);
+        Release pack=release("b".repeat(40),"备选",0);pack.setBatch(true);s.getReleases().add(pack);
+        Downloader dl=new Downloader(){@Override public JsonArray files(String hash){return new JsonArray();}};
+        SimpleTrackingService service=new SimpleTrackingService(store,new Catalog(),dl);service.tick();
+        DownloadTask shared=store.state().getDownloads().get(pack.getId());shared.setProgress(0);shared.setLastProgressAt(System.currentTimeMillis()-11*60_000);dl.tasks.get(pack.getId()).addProperty("state","metaDL");
+        service.tick();assertEquals("waiting",pack.getStatus());assertEquals("stoppedDL",dl.tasks.get(pack.getId()).get("state").getAsString());assertEquals(0,SimpleTrackingService.activeCount(dl.tasks()));
+    }
+    @Test void missingBatchDoesNotKeepPostponingRetryAndSecondSubmissionCanSucceed() throws Exception {
+        SimpleStore store=configured();Show s=show(store,"123");s.getEpisodeIds().put("1","ep1");s.getEpisodeNumbers().put("1",1d);Release pack=release("b".repeat(40),"备选",0);pack.setBatch(true);s.getReleases().add(pack);
+        class Flaky extends Downloader {int adds;@Override public void add(Release r,Path p) throws java.io.IOException {if(++adds==1)throw new java.io.IOException("once");super.add(r,p);}}
+        Flaky dl=new Flaky();SimpleTrackingService service=new SimpleTrackingService(store,new Catalog(),dl);service.tick();long retry=pack.getRetryAt();service.tick();assertEquals(retry,pack.getRetryAt());pack.setRetryAt(System.currentTimeMillis()-1);service.tick();assertEquals(2,dl.adds);assertEquals("downloading",pack.getStatus());
+    }
+    @Test void sharedTaskReportsItsSpeedSeparatelyAndWaitsForRequiredSubtitles() throws Exception {
+        SimpleStore store=configured();Show s=show(store,"123");String hash="b".repeat(40);Release r=release(hash+"-file-1","备选",1);r.setTorrentHash(hash);r.setFileIndex(1);r.getSubtitleIndices().add(0);r.setStatus("downloading");r.setRequested(true);s.getReleases().add(r);store.save();
+        Downloader dl=new Downloader(){@Override public JsonArray files(String h){return JsonParser.parseString("[{\"index\":0,\"name\":\"01.chs.srt\",\"size\":10,\"priority\":1,\"progress\":0.25},{\"index\":1,\"name\":\"01.mp4\",\"size\":100,\"priority\":1,\"progress\":1}]").getAsJsonArray();}};
+        JsonObject task=new JsonObject();task.addProperty("hash",hash);task.addProperty("progress",0.8);task.addProperty("state","downloading");task.addProperty("dlspeed",2048);dl.tasks.put(hash,task);
+        SimpleTrackingService service=new SimpleTrackingService(store,new Catalog(),dl);service.pollProgress();Release live=service.state().getShows().getFirst().getReleases().getFirst();assertEquals(25,live.getProgress());assertEquals(2048,live.getTaskDownloadSpeed());assertEquals(0,live.getDownloadSpeed());
+    }
+    @Test void reusingCompletedSharedTorrentResetsGlobalActivityRatherThanOldPackActivity() throws Exception {
+        SimpleStore store=configured();Show a=show(store,"1"),b=show(store,"2");a.setEnabled(false);b.setSeason(2);b.getEpisodeIds().put("1","b1");b.getEpisodeNumbers().put("1",1d);
+        String hash="c".repeat(40);Path shared=root.resolve("library/_torrents/"+hash);Files.createDirectories(shared);
+        DownloadTask task=new DownloadTask();task.setHash(hash);task.setPath(shared.toString());task.setProgress(100);task.setLastProgressAt(System.currentTimeMillis()-20*60_000);MediaFile f=new MediaFile();f.setIndex(0);f.setName("S01E01.mkv");f.setProgress(1);task.getFiles().add(f);store.state().getDownloads().put(hash,task);
+        Release old=release(hash,"备选",0);old.setBatch(true);old.setDownloadPath(shared.toString());old.setStatus("batch");old.setProgress(100);old.setLastProgressAt(System.currentTimeMillis()-20*60_000);a.getReleases().add(old);
+        Release next=release(hash,"备选",0);next.setBatch(true);b.getReleases().add(next);
+        Downloader dl=new Downloader(){@Override public JsonArray files(String h){return JsonParser.parseString("[{\"index\":1,\"name\":\"S02E01.mkv\",\"size\":10,\"progress\":0}]").getAsJsonArray();}@Override public void filePriorities(DownloadTask t){}};
+        JsonObject remote=new JsonObject();remote.addProperty("hash",hash);remote.addProperty("progress",0);remote.addProperty("state","downloading");dl.tasks.put(hash,remote);
+        SimpleTrackingService service=new SimpleTrackingService(store,new Catalog(),dl);service.tick();service.tick();service.tick();assertEquals("downloading",dl.tasks.get(hash).get("state").getAsString());assertTrue(task.getLastProgressAt()>System.currentTimeMillis()-60_000);assertTrue(b.getReleases().stream().anyMatch(r->r.getFileIndex()==1&&r.isRequested()));
+    }
+    @Test void revisedResourceNumberCannotSilentlyRenameAnInstalledEpisode() throws Exception {
+        SimpleStore store=configured();Show show=show(store,"123");Release old=release("old","备选",1);old.setStatus("ready");Path dir=root.resolve("library/123/old");Files.createDirectories(dir);Path video=dir.resolve("old.mkv");Files.writeString(video,"original");old.setDownloadPath(dir.toString());old.setVideoPath(video.toString());show.getReleases().add(old);
+        PlaybackLibrary library=new PlaybackLibrary(root.resolve("simple-playback"));old.setPublishedFiles(library.publish(store.state().getSettings(),show,old));show.getSelected().put("1","old");String title=old.getTitle();
+        Catalog catalog=new Catalog();catalog.candidates.add(release("old","备选",2));show.setLastCatalogAt(0);new SimpleTrackingService(store,catalog,new Downloader()).tick();
+        assertEquals(title,old.getTitle());assertEquals(1,old.getEpisode());assertEquals("old",show.getSelected().get("1"));assertFalse(show.getCatalogIssue().isBlank());assertEquals("original",Files.readString(Path.of(old.getPublishedFiles().getFirst())));
+    }
 }

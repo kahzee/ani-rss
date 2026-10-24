@@ -19,33 +19,37 @@
       <section v-if="activeDownloads.length || pendingDownloads.length" class="download-overview" aria-label="下载进度">
         <div class="download-heading"><div><h2>下载进度</h2><p>{{ activeDownloads.length }} 个下载中 · {{ queuedDownloads.length }} 个排队<span v-if="retryDownloads.length"> · {{ retryDownloads.length }} 个待重试</span><span v-if="activeDownloads.length"> · {{ formatBytes(totalSpeed) }}/s</span></p></div><span class="sync-time">每 10 秒更新<span v-if="state.downloadCheckedAt"> · 最近 {{ new Date(state.downloadCheckedAt).toLocaleTimeString('zh-CN', {hour12:false}) }}</span></span></div>
         <div v-for="item in activeDownloads" :key="item.release.id" class="transfer-row">
-          <div class="transfer-title"><el-button link type="primary" @click="openDetail(item.show.id)">{{ item.show.title }} · 第 {{ item.release.episode }} 集</el-button><span>{{ item.release.group }} · {{ downloadKind(item) }}</span></div>
+          <div class="transfer-title"><el-button link type="primary" @click="openDetail(item.show.id)">{{ item.show.title }} · {{ episodeLabel(item.release) }}</el-button><span>{{ item.release.group }} · {{ downloadKind(item) }}</span></div>
           <el-progress :percentage="percentage(item.release)" :stroke-width="8"/>
-          <div class="transfer-meta"><span>{{ transferState(item.release) }} · {{ formatBytes(item.release.downloadSpeed) }}/s</span><span v-if="item.release.totalBytes">{{ formatBytes(item.release.downloadedBytes) }} / {{ formatBytes(item.release.totalBytes) }}</span><span v-if="eta(item.release)">预计剩余 {{ eta(item.release) }}</span></div>
+          <div class="transfer-meta"><span>{{ transferState(item.release) }}{{ item.release.torrentHash ? " · 共享任务整体速度" : "" }} · {{ formatBytes(transferSpeed(item.release)) }}/s</span><span v-if="item.release.totalBytes">{{ formatBytes(item.release.downloadedBytes) }} / {{ formatBytes(item.release.totalBytes) }}</span><span v-if="eta(item.release)">预计剩余 {{ eta(item.release) }}</span></div>
         </div>
-        <details v-if="pendingDownloads.length" class="pending-downloads"><summary>等待下载 {{ pendingDownloads.length }} 个版本 · 展开查看</summary><div class="pending-list"><div v-for="item in pendingDownloads" :key="item.release.id" class="pending-row"><el-button link @click="openDetail(item.show.id)">{{ item.show.title }} · 第 {{ item.release.episode }} 集</el-button><span>{{ item.release.group }} · {{ downloadKind(item) }} · {{ item.retry ? '待重试' : '等待名额' }}</span></div></div></details>
+        <details v-if="pendingDownloads.length" class="pending-downloads"><summary>等待下载 {{ pendingDownloads.length }} 个版本 · 展开查看</summary><div class="pending-list"><div v-for="item in pendingDownloads" :key="item.release.id" class="pending-row"><el-button link @click="openDetail(item.show.id)">{{ item.show.title }} · {{ episodeLabel(item.release) }}</el-button><span>{{ item.release.group }} · {{ downloadKind(item) }} · {{ item.retry ? '待重试' : '等待名额' }}</span></div></div></details>
       </section>
       <article v-for="show in state.shows" :key="show.id" class="show-card" @click="openDetail(show.id)">
         <div class="cover"><img v-if="show.image" :src="show.image" :alt="show.title" loading="lazy"><span v-else>追</span><div class="cover-count">{{ Object.keys(show.selected).length }}{{ show.totalEpisodes ? ` / ${show.totalEpisodes}` : '' }} 集已发布</div></div>
-        <div class="card-info"><h2>{{ show.title }}</h2><p class="status">{{ show.message }}</p><div v-for="release in downloading(show)" :key="release.id" class="card-progress"><span>第 {{ release.episode }} 集 · {{ transferState(release) }}</span><el-progress :percentage="percentage(release)" :stroke-width="5"/><span>{{ formatBytes(release.downloadSpeed) }}/s</span></div><p v-if="show.enabled && show.queuedReleaseIds?.length" class="download-text">{{ show.queuedReleaseIds.length }} 个版本等待下载</p><div class="card-foot"><span>{{ show.enabled ? '自动追番' : '已暂停' }}</span><span>版本与目录 →</span></div></div>
+        <div class="card-info"><h2>{{ show.title }}</h2><p class="status">{{ show.message }}</p><div v-for="release in downloading(show)" :key="release.id" class="card-progress"><span>{{ episodeLabel(release) }} · {{ transferState(release) }}</span><el-progress :percentage="percentage(release)" :stroke-width="5"/><span>{{ formatBytes(transferSpeed(release)) }}/s</span></div><p v-if="show.enabled && show.queuedReleaseIds?.length" class="download-text">{{ show.queuedReleaseIds.length }} 个版本等待下载</p><div class="card-foot"><span>{{ show.enabled ? '自动追番' : '已暂停' }}</span><span>版本与目录 →</span></div></div>
       </article>
       <el-empty v-if="!state.shows.length" description="还没有关注的番剧。找到喜欢的，点一下追番。"><el-button type="primary" @click="tab='discover'; discover()">去找番</el-button></el-empty>
     </div>
 
     <div v-else class="discovery-list" v-loading="searching">
-      <div class="discovery-heading"><div><strong>{{ sourceMode === 'mikan' ? '蜜柑新番列表' : 'Bangumi 搜索结果' }}</strong><p v-if="sourceMode === 'mikan'">每 10 分钟自动更新 · {{ catalog.checkedAt ? `最近同步 ${formatTime(catalog.checkedAt)}` : '正在获取番剧列表' }}<span v-if="catalog.refreshing"> · 同步中</span></p></div><span>{{ visibleResults.length }} 部番剧</span></div>
+      <div class="history-toolbar"><el-button @click="sourceMode='mikan'; discover()">当季蜜柑</el-button><el-button @click="sourceMode='history'; search()">搜索历史番剧</el-button><el-button v-if="sourceMode==='history'" @click="onlineSearch" :loading="onlineSearching">本地找不到，联网补查</el-button><el-button v-if="sourceMode==='history'" @click="syncHistory" :disabled="historyStatus.syncing">检查资料版本</el-button></div>
+      <p v-if="sourceMode==='history'" class="hint">本地 {{ historyStatus.count || 0 }} 部作品 · {{ historyStatus.syncing ? historyStatus.phase : '按月检查，浏览和搜索不触发资料抓取' }}<span v-if="historyStatus.nextCheckAt"> · 下次检查 {{ formatTime(historyStatus.nextCheckAt) }}</span></p>
+      <el-alert v-if="sourceMode==='history' && historyStatus.error" :title="historyStatus.error" type="warning" :closable="false"/>
+
+      <div class="discovery-heading"><div><strong>{{ sourceMode === 'mikan' ? '蜜柑新番列表' : '本地历史番剧库' }}</strong><p v-if="sourceMode === 'mikan'">每 10 分钟自动更新 · {{ catalog.checkedAt ? `最近同步 ${formatTime(catalog.checkedAt)}` : '正在获取番剧列表' }}<span v-if="catalog.refreshing"> · 同步中</span></p></div><span>{{ visibleResults.length }} 部番剧</span></div>
       <el-alert v-if="sourceMode === 'mikan' && catalog.error" :title="catalog.error" type="warning" :closable="false" show-icon/>
       <el-radio-group v-if="sourceMode === 'mikan'" v-model="weekday" class="weekday-filter" size="small"><el-radio-button v-for="day in weekdays" :key="day" :value="day">{{ day }}</el-radio-button></el-radio-group>
       <div class="anime-list">
         <article v-for="show in visibleResults" :key="`${show.source || 'bgm'}-${show.id}`" class="anime-row">
           <img v-if="show.image" :src="show.image" :alt="show.title" loading="lazy" class="list-cover"><div v-else class="list-cover cover-placeholder">番</div>
-          <div class="list-title"><h2>{{ show.title }}</h2><p>{{ show.weekday || show.subtitle }}</p></div>
+          <div class="list-title"><h2>{{ show.title }}</h2><p>{{ show.weekday || show.date || show.subtitle }}{{ show.original && show.original !== show.title ? ` · ${show.original}` : "" }}</p></div>
           <div v-if="show.source === 'mikan'" class="list-update"><span>蜜柑资源更新</span><strong>{{ show.updated || '暂无发布' }}</strong><a :href="show.url" target="_blank" rel="noopener noreferrer">蜜柑详情 ↗</a></div>
           <el-button type="primary" :disabled="isDiscoveryFollowed(show)" :loading="following === show.id" @click="follow(show)">{{ isDiscoveryFollowed(show) ? '已在追' : '追番' }}</el-button>
         </article>
       </div>
       <el-empty v-if="!visibleResults.length && !searching" :description="catalog.refreshing ? '首次列表同步中，稍后会自动显示。' : '没有匹配的番剧，试试其他名称或星期。'"/>
-      <p class="hint">番剧与资源更新日期来自蜜柑计划；更新日期不代表已有认可字幕组的中文字幕。</p>
+      <p class="hint">当季列表来自蜜柑，历史索引来自 Bangumi。资料存在不代表有可下载的中文字幕资源。</p>
     </div>
 
     <el-dialog v-model="settingsOpen" title="一次配置，持续追番" width="min(620px, 94vw)" :close-on-click-modal="false">
@@ -71,7 +75,7 @@
         <el-collapse><el-collapse-item title="本番偏好与追番状态" name="preferences">
           <el-form label-position="top"><el-form-item label="本番认可字幕组（按偏好排序；留空沿用基础配置）"><el-input v-model="preferenceText" type="textarea" :rows="3"/></el-form-item><p class="hint">已发现字幕组：<el-button v-for="group in discoveredGroups" :key="group" link type="primary" @click="addGroup(group)">{{ group }}</el-button><span v-if="!discoveredGroups.length">暂未发现可识别的单集资源</span></p><div class="preference-controls"><el-switch v-model="preferences.fastest" active-text="着急看：优先最早发布的可接受版本"/><el-switch v-model="preferences.enabled" active-text="自动追番"/><el-button type="primary" @click="savePreferences" :loading="saving">保存偏好</el-button></div></el-form>
         </el-collapse-item></el-collapse>
-        <p class="hint">已下载的旧版本保留在资源库。手动切换后该集会固定，点「恢复自动」即可继续自动升级。</p>
+        <p v-if="detail.show.missingEpisodes?.length" class="hint">本季目录缺集：{{ detail.show.missingEpisodes.join("、") }}</p><p v-if="detail.show.catalogIssue" class="error">{{ detail.show.catalogIssue }}</p><p v-if="!Object.keys(detail.show.episodeIds || {}).length" class="hint">剧集目录尚未确认，暂不声明已补齐。</p><p v-for="pack in detail.show.releases.filter(r => r.batch)" :key="pack.id" class="hint">合集：{{ pack.title }} · {{ pack.error || (pack.status==='batch' ? '已按文件管理' : statusLabel(pack)) }}</p><p class="hint">已下载的旧版本保留在资源库。手动切换后该集会固定，点「恢复自动」即可继续自动升级。</p>
         <div v-for="episode in episodes" :key="episode.key" class="episode">
           <div class="episode-heading"><strong>第 {{ episode.key }} 集</strong><el-tag v-if="detail.show.pinnedEpisodes.includes(episode.key)" type="warning" size="small">手动固定</el-tag><el-button v-if="detail.show.pinnedEpisodes.includes(episode.key)" link type="primary" @click="automatic(episode.key)">恢复自动</el-button></div>
           <div v-for="release in episode.releases" :key="release.id" class="release">
@@ -94,6 +98,7 @@ const state = ref({settings: {trustedGroups: []}, shows: []})
 const loading = ref(true), refreshing = ref(false), searching = ref(false), following = ref(''), saving = ref(false), testing = ref(false), working = ref('')
 const tab = ref('following'), query = ref(''), results = ref([]), settingsOpen = ref(false), detailOpen = ref(false), detail = ref(null)
 const settings = reactive({}), preferences = reactive({}), trustedText = ref(''), preferenceText = ref('')
+const historyStatus = ref({count:0, syncing:false, error:'', nextCheckAt:0}), onlineSearching = ref(false)
 const catalog = ref({items: [], checkedAt: 0, refreshing: false, error: ''}), weekday = ref('全部'), sourceMode = ref('mikan'), followedMikan = ref({})
 const weekdays = computed(() => ['全部', ...new Set(catalog.value.items.map(show => show.weekday))])
 const visibleResults = computed(() => {
@@ -112,7 +117,9 @@ const activeDownloads = computed(() => state.value.shows.flatMap(show => downloa
 const queuedDownloads = computed(() => state.value.shows.filter(show => show.enabled).flatMap(show => (show.queuedReleaseIds || []).map(id => ({show,release:show.releases.find(r => r.id===id)})).filter(item => item.release)))
 const retryDownloads = computed(() => state.value.shows.filter(show => show.enabled).flatMap(show => show.releases.filter(r => ['waiting','error'].includes(r.status) && r.retryAt && !(show.queuedReleaseIds || []).includes(r.id)).map(release => ({show,release,retry:true}))))
 const pendingDownloads = computed(() => [...queuedDownloads.value,...retryDownloads.value])
-const totalSpeed = computed(() => activeDownloads.value.reduce((sum,item) => sum+(item.release.downloadSpeed || 0),0))
+const transferSpeed = release => release.torrentHash ? release.taskDownloadSpeed || 0 : release.downloadSpeed || 0
+const episodeLabel = release => release.batch ? '合集元数据' : `第 ${release.episode} 集`
+const totalSpeed = computed(() => [...new Map(activeDownloads.value.map(item=>[item.release.torrentHash || item.release.id,transferSpeed(item.release)])).values()].reduce((a,b)=>a+b,0))
 const percentage = release => Math.max(0,Math.min(100,Math.round((release.progress || 0)*10)/10))
 const downloadKind = item => item.show.selected[String(item.release.episode)] ? '版本升级' : '补齐'
 function formatBytes(value=0) {const n=Math.max(0,Number(value)||0);const units=['B','KB','MB','GB','TB'];const i=Math.min(4,n>0?Math.floor(Math.log(n)/Math.log(1024)):0);return `${(n/1024**i).toFixed(i ? 1 : 0)} ${units[i]}`}
@@ -124,16 +131,17 @@ function transferState(release) {
   if(s.startsWith('stopped') || s.startsWith('paused')) return '已暂停'
   if(release.progress>=100) return '下载完成，正在整理'
   if(s.includes('queued')) return '下载器排队中'
-  if(s==='stalleddl' || s==='forcedmetadl' || !release.downloadSpeed) return '等待连接 / 下载源'
+  if(s==='stalleddl' || s==='forcedmetadl' || !transferSpeed(release)) return '等待连接 / 下载源'
   return '正在下载'
 }
-function eta(release) {const s=release.etaSeconds;if(!release.downloadSpeed || s==null || s<0 || s>=8640000) return '';if(s<60)return `${Math.max(1,Math.ceil(s))} 秒`;if(s<3600)return `${Math.ceil(s/60)} 分钟`;return `${Math.floor(s/3600)} 小时 ${Math.ceil(s%3600/60)} 分钟`}
+function eta(release) {const s=release.etaSeconds;if(!transferSpeed(release) || s==null || s<0 || s>=8640000) return '';if(s<60)return `${Math.max(1,Math.ceil(s))} 秒`;if(s<3600)return `${Math.ceil(s/60)} 分钟`;return `${Math.floor(s/3600)} 小时 ${Math.ceil(s%3600/60)} 分钟`}
 const isFollowed = id => state.value.shows.some(show => show.id === String(id))
 const allowed = release => !release.numberingIssue && release.chinese && (detail.value.groups.some(g => g.toLowerCase() === release.group.toLowerCase()) || state.value.settings.allowOtherChinese && !detail.value.show.preferredGroups.length)
 const discoveredGroups = computed(() => [...new Set(detail.value?.show.releases.map(r => r.group) || [])].sort())
 const episodes = computed(() => {
   const groups = new Map()
   for (const release of detail.value?.show.releases || []) {
+    if(release.batch) continue
     const key = String(release.episode)
     if (!groups.has(key)) groups.set(key, [])
     groups.get(key).push(release)
@@ -146,7 +154,7 @@ const episodes = computed(() => {
 const statusLabel = release => ({available:'可按需下载', submitting:'正在提交', downloading:`下载中 ${Math.round(release.progress)}%`, ready:'已在资源库', invalid:'媒体校验未通过', error:'下载失败，等待重试', waiting:'暂无进展，等待重试', paused:'已暂停'}[release.status] || release.status)
 
 async function load() {
-  try {state.value = (await post('state')).data; if (detailOpen.value && detail.value) await loadDetail(detail.value.show.id); if(tab.value==='discover' && sourceMode.value==='mikan' && !searching.value) await discover(false)} finally {loading.value=false}
+  try {state.value = (await post('state')).data; if (detailOpen.value && detail.value) await loadDetail(detail.value.show.id); if(tab.value==='discover' && sourceMode.value==='mikan' && !searching.value) await discover(false); if(tab.value==='discover' && sourceMode.value==='history') historyStatus.value=(await post('history/status')).data} finally {loading.value=false}
 }
 async function loadDetail(id) {detail.value=(await api.post(`api/simple/detail?id=${encodeURIComponent(id)}`)).data}
 async function openDetail(id) {
@@ -171,20 +179,28 @@ async function discover(showLoading=true) {
 }
 function changeTab(value) {if(value==='discover') discover().catch(()=>{})}
 async function search() {
-  if(!query.value.trim()) {tab.value='discover'; return discover()}
+  if(!query.value.trim()) {tab.value='discover'; if(sourceMode.value==='history') {historyStatus.value=(await post('history/status')).data; results.value=[]; return} return discover()}
   tab.value='discover'; searching.value=true
   try {
     const match=query.value.match(/(?:bgm\.tv|bangumi\.tv|chii\.in)\/subject\/(\d+)/)
     if(match) {
-      sourceMode.value='bangumi'
+      sourceMode.value='history'
       const {data}=await api.post(`api/animeGardenList?bgmUrl=${encodeURIComponent(query.value.trim())}`)
-      results.value=data.flatMap(w=>w.subjects.map(s=>({id:String(s.id),title:s.name,image:s.cover,subtitle:'Bangumi'})))
+      results.value=data.flatMap(w=>w.subjects.map(s=>({id:String(s.id),title:s.name,image:s.cover,subtitle:'Bangumi',source:'history'})))
     } else {
-      weekday.value='全部'
-      await discover(false)
+      sourceMode.value='history'
+      const {data}=await post('history/search',{query:query.value.trim()}); results.value=data.items; historyStatus.value=data.status
     }
   } finally {searching.value=false}
 }
+async function onlineSearch() {
+  if(!query.value.trim()) return ElMessage.info('先输入番名')
+  onlineSearching.value=true
+  try {const {data}=await post('history/search',{query:query.value.trim(),online:'true'});results.value=data.items;historyStatus.value=data.status}
+  finally {onlineSearching.value=false}
+}
+async function syncHistory() {await post('history/sync');historyStatus.value=(await post('history/status')).data;ElMessage.success('已提交后台版本检查，现有资料继续可用')}
+
 async function follow(show) {following.value=show.id; try {if(show.source==='mikan') {const {data}=await post('follow-mikan',{mikanId:show.id}); followedMikan.value[show.id]=data.id} else await post('follow',{subjectId:show.id}); await load(); ElMessage.success('已关注，会自动补齐并持续追更')} finally {following.value=''}}
 function addGroup(group) {const values=lines(preferenceText.value); if(!values.includes(group)) preferenceText.value=[...values,group].join('\n')}
 async function savePreferences() {saving.value=true; try {await post('preferences',{...preferences,groups:lines(preferenceText.value)}); await load(); ElMessage.success('偏好已保存')} finally {saving.value=false}}

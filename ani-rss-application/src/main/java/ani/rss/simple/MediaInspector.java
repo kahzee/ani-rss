@@ -25,7 +25,7 @@ public class MediaInspector {
         JsonObject json;
         try {json=JsonParser.parseString(probe.read(video)).getAsJsonObject();}
         catch(RuntimeException e){throw new IOException("无法读取媒体探测结果",e);}
-        boolean picture=false,chineseTrack=false;
+        boolean picture=false,chineseTrack=false,foreignTracks=false;
         if(!json.has("streams") || !json.get("streams").isJsonArray()) throw new IOException("媒体探测结果缺少音视频轨道");
         for(JsonElement element:json.getAsJsonArray("streams")) {
             if(!element.isJsonObject()) continue;
@@ -34,11 +34,12 @@ public class MediaInspector {
             if(type.equals("subtitle") && stream.has("tags")) {
                 JsonObject tags=stream.getAsJsonObject("tags");String language=tags.has("language")?tags.get("language").getAsString().toLowerCase(Locale.ROOT):"";
                 chineseTrack|=Set.of("chi","zho","zh","chs","cht","zh-cn","zh-tw","zh-hans","zh-hant").contains(language);
+                foreignTracks|=Set.of("jpn","ja","eng","en").contains(language);
             }
         }
         double duration=0;try{duration=json.getAsJsonObject("format").get("duration").getAsDouble();}catch(RuntimeException ignored){}
         if(!picture || !Double.isFinite(duration) || duration<=0) throw new IOException("媒体不含可识别的视频画面或有效时长，原件保留，改用其他版本");
-        boolean text=false;
+        boolean text=false,kana=false,declaredChineseSidecar=false;
         for(String name:release.getSubtitles()) {
             Path file=Path.of(name);String ext=PlaybackLibrary.extension(file);
             if(!Set.of("ass","ssa","srt","vtt").contains(ext)) continue;
@@ -48,8 +49,11 @@ public class MediaInspector {
             catch(CharacterCodingException e){content=Charset.forName("GB18030").decode(java.nio.ByteBuffer.wrap(bytes)).toString();}
             if(Set.of("ass","ssa").contains(ext)) content=content.lines().filter(l->l.startsWith("Dialogue:")).reduce("",(a,b)->a+"\n"+b);
             text|=content.codePoints().anyMatch(c->Character.UnicodeScript.of(c)==Character.UnicodeScript.HAN);
+            kana|=content.codePoints().anyMatch(c->Character.UnicodeScript.of(c)==Character.UnicodeScript.HIRAGANA||Character.UnicodeScript.of(c)==Character.UnicodeScript.KATAKANA);
+            declaredChineseSidecar|=Set.of("zh-Hans","zh-Hant").contains(PlaybackLibrary.subtitleLanguage(file.getFileName().toString()));
         }
-        release.setSubtitleEvidence(text?"外挂字幕正文含中文":chineseTrack?"字幕轨标记为中文（未逐句校验）":"发布标题声明中文；画面内嵌字幕待抽检");
+        if(release.isChinese()&&!chineseTrack&&!declaredChineseSidecar&&(foreignTracks||kana))throw new IOException("仅发现外语字幕证据，中文字幕待核对；已保留原件");
+        release.setSubtitleEvidence(chineseTrack?"字幕轨标记为中文（未逐句校验）":text?(declaredChineseSidecar?"外挂字幕标记中文且正文含汉字（未逐句校验）":"外挂字幕正文含汉字，语言待核验") :"发布标题声明中文；画面内嵌字幕待抽检");
         release.setMediaSignature(signature);
     }
     private static String run(Path video) throws IOException,InterruptedException {

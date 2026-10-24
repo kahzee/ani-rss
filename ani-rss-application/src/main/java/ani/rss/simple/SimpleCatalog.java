@@ -17,12 +17,22 @@ import java.net.URI;
 public class SimpleCatalog {
     @Value("${simple.catalog-url:https://api.animes.garden}")
     private String host = "https://api.animes.garden";
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private HistoryCatalog history;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private MikanHistoryResources mikanHistory;
 
     public SimpleCatalog() {}
     SimpleCatalog(String host) { this.host = host; }
-    public void episodeMetadata(Show show) {
-        if(show.getSeason()>1 && (show.getEpisodeNumbers().isEmpty() || System.currentTimeMillis()-show.getEpisodeMetadataAt()>24*60*60_000L))
-            EpisodeNumbers.metadata(show,ani.rss.util.other.BgmUtil.getEpisodes(show.getId(),0));
+    public void episodeMetadata(Show show) throws Exception {
+        if(history!=null && (show.getEpisodeIds().isEmpty() || System.currentTimeMillis()-show.getEpisodeMetadataAt()>(show.isHistorical()?31L:1L)*24*60*60_000)) {
+            var episodes=history.episodes(show.getId(),show.isHistorical());Show proposed=new Show();EpisodeNumbers.metadata(proposed,episodes);
+            if(!show.getEpisodeIds().isEmpty()&&!show.getSelected().isEmpty()&&(show.getEpisodeIds().entrySet().stream().anyMatch(e->!Objects.equals(proposed.getEpisodeIds().get(e.getKey()),e.getValue()))||show.getEpisodeNumbers().entrySet().stream().anyMatch(e->!Objects.equals(proposed.getEpisodeNumbers().get(e.getKey()),e.getValue())))) {
+                show.setCatalogIssue("上游剧集目录发生变化，保留原编号与播放文件等待核对");show.setEpisodeMetadataAt(System.currentTimeMillis());return;
+            }
+            EpisodeNumbers.metadata(show,episodes);show.setEpisodeMetadataAt(history.episodeCheckedAt(show.getId()));show.setCatalogIssue("");
+            show.setHistorical(!episodes.isEmpty()&&episodes.stream().allMatch(e->e.getAirdate()!=null&&System.currentTimeMillis()-e.getAirdate().getTime()>180L*24*60*60_000));
+        }
     }
     private static final Pattern HASH = Pattern.compile("(?i)btih:([a-f0-9]{40}|[a-z2-7]{32})(?:&|$)");
     // Batch titles must not be silently assigned to the first episode.
@@ -63,17 +73,23 @@ public class SimpleCatalog {
                         JsonObject json = JsonParser.parseString(response.body()).getAsJsonObject();
                         return GsonStatic.fromJsonList(json.getAsJsonArray("resources"), AnimeGarden.Item.class);
                     });
+            if(current==1 && resources.isEmpty() && mikanHistory!=null) {
+                try{resources=mikanHistory.releases(show);}catch(Exception e){throw new IllegalStateException("蜜柑历史资源暂不可用",e);}
+            }
             for (AnimeGarden.Item resource : resources) {
-                if (resource.getFansub() == null || resource.getMagnet() == null || resource.getTitle() == null) continue;
+                if (resource.getMagnet() == null || resource.getTitle() == null) continue;
+                if(BatchMapper.special(resource.getTitle()))continue;
+                if(resource.getFansub()==null){AnimeGarden.Fansub group=new AnimeGarden.Fansub();group.setId("unknown");group.setName("未标注字幕组");resource.setFansub(group);}
                 String hash = infoHash(resource.getMagnet());
-                if (hash.isBlank() || isBatch(resource.getTitle()) || "合集".equals(resource.getType())) continue;
+                if (hash.isBlank()) continue;
+                boolean batch=isBatch(resource.getTitle()) || "合集".equals(resource.getType());
                 Item item = new Item().setTitle(resource.getTitle()).setSubgroup(resource.getFansub().getName());
-                if (!RenameUtil.rename(parser, item) || !Double.isFinite(item.getEpisode()) || item.getEpisode() <= 0) continue;
+                if (!batch && (!RenameUtil.rename(parser, item) || !Double.isFinite(item.getEpisode()) || item.getEpisode() <= 0)) continue;
                 Release release = new Release();
                 release.setId(hash);
                 release.setTitle(resource.getTitle());
                 release.setGroup(resource.getFansub().getName());
-                release.setEpisode(item.getEpisode());
+                release.setBatch(batch);release.setEpisode(batch?0:item.getEpisode());
                 release.setMagnet(resource.getMagnet());
                 if (resource.getHref() != null) {
                     try {
@@ -85,7 +101,7 @@ public class SimpleCatalog {
                 }
                 release.setPublishedAt(resource.getCreatedAt() == null ? Long.MAX_VALUE : resource.getCreatedAt().getTime());
                 release.setChinese(ReleasePolicy.hasChinese(resource.getTitle()));
-                EpisodeNumbers.apply(show,release);
+                if(!batch)EpisodeNumbers.apply(show,release);
                 result.add(release);
             }
             if (resources.size() < 100) return result;

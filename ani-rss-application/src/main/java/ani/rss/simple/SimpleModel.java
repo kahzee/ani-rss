@@ -39,6 +39,7 @@ public final class SimpleModel {
         private Settings settings = new Settings();
         private List<Show> shows = new ArrayList<>();
         private long downloadCheckedAt;
+        private Map<String,DownloadTask> downloads = new LinkedHashMap<>();
     }
 
     @Data
@@ -61,6 +62,15 @@ public final class SimpleModel {
         private Map<String, Double> episodeNumbers = new LinkedHashMap<>();
         private Map<String, String> episodeIds = new LinkedHashMap<>();
         private long episodeMetadataAt;
+        private String catalogIssue = "";
+        private List<String> missingEpisodes = new ArrayList<>();
+        private long nextCatalogAt;
+        private int unchangedCatalogs;
+        private boolean historical;
+        private String mikanId = "";
+        private long mikanCheckedAt;
+        private long mikanRetryAt;
+        private String mikanIssue = "";
         private String message = "等待检查资源";
         // Filled on public snapshots, one planned resource per episode, not every alternative.
         private List<String> queuedReleaseIds = new ArrayList<>();
@@ -71,6 +81,13 @@ public final class SimpleModel {
         private String id;
         private String title;
         private String group;
+        private boolean batch;
+        private String torrentHash = "";
+        private String sourceTitle = "";
+        private String episodeId = "";
+        private int fileIndex = -1;
+        private List<Integer> subtitleIndices = new ArrayList<>();
+        private boolean requested;
         private double episode;
         private Double sourceEpisode;
         private String numberingIssue = "";
@@ -86,6 +103,7 @@ public final class SimpleModel {
         private List<String> subtitles = new ArrayList<>();
         private double progress;
         private long downloadSpeed;
+        private long taskDownloadSpeed;
         private long downloadedBytes;
         private long totalBytes;
         private long etaSeconds = -1;
@@ -93,9 +111,27 @@ public final class SimpleModel {
         private String downloadState = "";
         private long lastProgressAt;
         private long retryAt;
+        private int failures;
         private String error = "";
         // Snapshot of the paths installed into the playback directory, for recovery.
         private List<String> publishedFiles = new ArrayList<>();
+    }
+
+    @Data public static class DownloadTask {
+        private String hash;
+        private String path;
+        private Set<Integer> requestedFiles = new LinkedHashSet<>();
+        private List<MediaFile> files = new ArrayList<>();
+        private long lastProgressAt;
+        private double progress = -1;
+        private long retryAt;
+        private int failures;
+    }
+    @Data public static class MediaFile {
+        private int index;
+        private String name;
+        private long size;
+        private double progress;
     }
 
     @Data

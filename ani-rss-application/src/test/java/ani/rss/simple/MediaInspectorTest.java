@@ -19,4 +19,14 @@ class MediaInspectorTest {
         MediaInspector i=new MediaInspector(p->"{\"streams\":[{\"codec_type\":\"video\",\"width\":16,\"height\":16}],\"format\":{\"duration\":4}}");i.inspect(r);assertTrue(r.getSubtitleEvidence().contains("待抽检"));
         r.setMediaSignature("");Files.writeString(sub,"Dialogue: 0,00:00:01,00:00:02,Default,,0,0,0,,你好");i.inspect(r);assertTrue(r.getSubtitleEvidence().contains("正文"));
     }
+    @Test void japaneseKanjiMustNotBeClaimedAsVerifiedChinese() throws Exception {
+        Release r=release();r.setChinese(true);Path sub=root.resolve("episode.ja.srt");Files.writeString(sub,"1\n00:00:01,000 --> 00:00:02,000\n日本語の字幕です");r.getSubtitles().add(sub.toString());
+        MediaInspector inspector=new MediaInspector(p->"{\"streams\":[{\"codec_type\":\"video\",\"width\":16,\"height\":16}],\"format\":{\"duration\":4}}");
+        assertThrows(java.io.IOException.class,()->inspector.inspect(r));assertEquals("",r.getMediaSignature());
+    }
+    @Test void explicitEnglishSubtitleTrackDoesNotSatisfyChineseRequirement() throws Exception {
+        Release r=release();r.setChinese(true);
+        MediaInspector inspector=new MediaInspector(p->"{\"streams\":[{\"codec_type\":\"video\",\"width\":16,\"height\":16},{\"codec_type\":\"subtitle\",\"tags\":{\"language\":\"eng\"}}],\"format\":{\"duration\":4}}");
+        assertThrows(java.io.IOException.class,()->inspector.inspect(r));
+    }
 }

@@ -13,6 +13,7 @@ class ContainerStateTest(unittest.TestCase):
     def test_converts_paths_and_preserves_pins_and_downloader_namespace(self):
         state = {"settings": {"libraryRoot": "K:\\nvme\\resources", "playbackRoot": "K:\\sata\\playback",
                               "downloaderRoot": "/downloads/ani-rss-simple", "credential": "fixture-secret"},
+                 "downloads": {"hash": {"path": "K:\\nvme\\resources\\_torrents\\hash"}},
                  "shows": [{"selected": {"1": "hash"}, "pinnedEpisodes": ["1"], "releases": [
                      {"downloadPath": "K:\\nvme\\resources\\123\\hash", "videoPath": "K:\\nvme\\resources\\123\\hash\\file.mkv",
                       "subtitles": ["K:\\nvme\\resources\\123\\hash\\file.ass"],
@@ -20,6 +21,7 @@ class ContainerStateTest(unittest.TestCase):
         converted, old, new = exporter.convert(state)
         release = converted["shows"][0]["releases"][0]
         self.assertEqual("/resources/123/hash/file.mkv", release["videoPath"])
+        self.assertEqual("/resources/_torrents/hash", converted["downloads"]["hash"]["path"])
         self.assertEqual(["/playback/show/season/file.mkv"], release["publishedFiles"])
         self.assertEqual(["1"], converted["shows"][0]["pinnedEpisodes"])
         self.assertEqual("/downloads/ani-rss-simple", converted["settings"]["downloaderRoot"])

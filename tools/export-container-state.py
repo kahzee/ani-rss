@@ -12,6 +12,7 @@ import os
 from pathlib import Path, PureWindowsPath, PurePosixPath
 import shutil
 import uuid
+import sqlite3
 
 
 def local_file(value):
@@ -43,6 +44,8 @@ def convert(original):
     state = copy.deepcopy(original)
     settings = state["settings"]
     library, playback = settings["libraryRoot"], settings["playbackRoot"]
+    for task in state.get("downloads", {}).values():
+        task["path"] = "/resources/" + relative(task["path"], library)
     for show in state["shows"]:
         for release in show["releases"]:
             for key in ("downloadPath", "videoPath"):
@@ -100,6 +103,13 @@ def main():
             metadata = source / "simple-playback" / old_scope
             if metadata.exists():
                 shutil.copytree(metadata, destination / "simple-playback" / new_scope)
+            history = source / "history" / "catalog.db"
+            if history.exists():
+                (destination / "history").mkdir()
+                # SQLite backup includes committed WAL contents, without copying a live DB file.
+                with sqlite3.connect(history.as_uri() + "?mode=ro", uri=True) as old_db:
+                    with sqlite3.connect(destination / "history" / "catalog.db") as new_db:
+                        old_db.backup(new_db)
             # Preserve login and upstream configuration, but never copy upstream subscriptions.
             for name in ("config.v2.json", "simple-mikan.json"):
                 if (source / name).exists():

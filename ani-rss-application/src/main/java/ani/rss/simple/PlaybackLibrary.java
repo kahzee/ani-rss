@@ -45,6 +45,13 @@ public class PlaybackLibrary {
     public Path showDirectory(Settings settings, Show show) throws IOException {
         return inside(Path.of(settings.getPlaybackRoot()), show.getFolder());
     }
+    static Path resourceDirectory(Settings settings,Show show,Release release) throws IOException {
+        if(release.isBatch() || !release.getTorrentHash().isBlank()) {
+            String hash=SimpleDownloader.hash(release);if(!hash.matches("[a-f0-9]{40}"))throw new IOException("无效的共享种子标识");
+            return inside(Path.of(settings.getLibraryRoot()),"_torrents/"+hash);
+        }
+        return inside(Path.of(settings.getLibraryRoot()),show.getId()+"/"+release.getId());
+    }
 
     /** Keep existing linked folders stable; new folders identify the show to Zspace scanners. */
     public Path seasonDirectory(Settings settings, Show show) throws IOException {
@@ -80,7 +87,7 @@ public class PlaybackLibrary {
         recover(season, journal);
         Manifest previous = Files.exists(manifest) ? GsonStatic.fromJson(Files.readString(manifest), Manifest.class) : new Manifest();
         LinkedHashMap<String, Path> inputs = new LinkedHashMap<>();
-        Path sourceRoot = inside(Path.of(settings.getLibraryRoot()), show.getId() + "/" + release.getId());
+        Path sourceRoot = resourceDirectory(settings,show,release);
         Path video = checkedSource(sourceRoot, release.getVideoPath());
         String base = baseName(show, release.getEpisode());
         inputs.put(base + "." + extension(video), video);
@@ -238,7 +245,7 @@ public class PlaybackLibrary {
                     // contain copies from any retained version of this canonical episode.
                     for(Release candidate:show.getReleases()) {
                         if(!candidate.getNumberingIssue().isBlank() || !ReleasePolicy.episodeKey(candidate.getEpisode()).equals(entry.getKey())) continue;
-                        Path sourceRoot=inside(Path.of(settings.getLibraryRoot()),show.getId()+"/"+candidate.getId());
+                        Path sourceRoot=resourceDirectory(settings,show,candidate);
                         List<String> sources=new ArrayList<>(candidate.getSubtitles());if(candidate.getVideoPath()!=null)sources.add(candidate.getVideoPath());
                         for(String source:sources) {Path original=checkedSource(sourceRoot,source);if(Files.size(original)==Files.size(target)&&Files.mismatch(original,target)==-1){equal=true;break;}}
                         if(equal)break;
@@ -278,7 +285,7 @@ public class PlaybackLibrary {
             Set<String> owned=new LinkedHashSet<>();
             for (Release release : show.getReleases()) {
                 if (!ReleasePolicy.episodeKey(release.getEpisode()).equals(episode)) continue;
-                Path sourceRoot=inside(Path.of(settings.getLibraryRoot()),show.getId()+"/"+release.getId());
+                Path sourceRoot=resourceDirectory(settings,show,release);
                 List<String> sources=new ArrayList<>(release.getSubtitles());
                 if (release.getVideoPath()!=null) sources.add(release.getVideoPath());
                 for (String published : release.getPublishedFiles()) {

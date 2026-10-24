@@ -36,7 +36,7 @@ public final class ReleasePolicy {
 
     private static int languageRank(Release release, Settings settings) {
         if (!settings.isPreferSimplified()) return 0;
-        String title=Objects.toString(release.getTitle(), "");
+        String title=Objects.toString(release.getTitle(), "")+release.getSourceTitle();
         if (Pattern.compile("简|簡|(?i)(?<![a-z])(?:chs|zh[-_]hans)(?![a-z])|(?i)[\\[【(](?:GB|SC)(?:[^a-z0-9]|$)").matcher(title).find()) return 0;
         return 1;
     }
@@ -59,6 +59,7 @@ public final class ReleasePolicy {
         List<String> groups = groups(show, settings);
         Map<String, List<Release>> episodes = new TreeMap<>(Comparator.comparingDouble(Double::parseDouble));
         for (Release release : show.getReleases()) {
+            if(release.isBatch())continue;
             if (allowed(release, show, settings)) episodes.computeIfAbsent(episodeKey(release.getEpisode()), k -> new ArrayList<>()).add(release);
         }
         List<Release> result = new ArrayList<>();
@@ -79,6 +80,12 @@ public final class ReleasePolicy {
                     .filter(r -> better(r,selected,show,settings))
                     .min(order).ifPresent(result::add);
         });
+        boolean missing=show.getEpisodeIds().keySet().stream().anyMatch(ep->!show.getSelected().containsKey(ep)
+                && show.getReleases().stream().noneMatch(r->!r.isBatch()&&episodeKey(r.getEpisode()).equals(ep)&&Set.of("downloading","submitting").contains(r.getStatus()))
+                && result.stream().noneMatch(r->episodeKey(r.getEpisode()).equals(ep)));
+        if(missing)show.getReleases().stream().filter(Release::isBatch).filter(r->allowed(r,show,settings))
+                .filter(r->Set.of("available","waiting","error").contains(r.getStatus())&&r.getRetryAt()<=System.currentTimeMillis())
+                .min(quality(show,settings).thenComparingLong(Release::getPublishedAt)).ifPresent(result::add);
         return result;
     }
 

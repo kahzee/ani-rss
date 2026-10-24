@@ -12,6 +12,17 @@ import java.util.Map;
 public class SimpleTrackingController {
     private final SimpleTrackingService service;
     private final MikanDiscovery mikan;
+    private final HistoryCatalog history;
+
+    @Auth @PostMapping("/simple/history/search")
+    public Result<Map<String,Object>> historySearch(@RequestBody Map<String,String> request) throws Exception {
+        String query=request.getOrDefault("query","");
+        return Result.success(Map.of("items","true".equals(request.get("online"))?history.onlineSearch(query):history.search(query),"status",history.status()));
+    }
+    @Auth @PostMapping("/simple/history/status")
+    public Result<Map<String,Object>> historyStatus() throws Exception {return Result.success(history.status());}
+    @Auth @PostMapping("/simple/history/sync")
+    public Result<Void> historySync(){history.requestSync();return Result.success();}
 
     @Auth @PostMapping("/simple/discover")
     public Result<MikanDiscovery.Snapshot> discover() {
@@ -28,7 +39,7 @@ public class SimpleTrackingController {
 
     @Auth @PostMapping("/simple/settings")
     public Result<Void> settings(@RequestBody Settings settings) throws Exception {
-        service.settings(settings); service.refresh(); return Result.success();
+        service.settings(settings); service.wake(); return Result.success();
     }
 
     @Auth @PostMapping("/simple/test")
@@ -42,7 +53,7 @@ public class SimpleTrackingController {
 
     @Auth @PostMapping("/simple/preferences")
     public Result<Void> preferences(@RequestBody PreferenceRequest request) throws Exception {
-        service.preferences(request); service.refresh(); return Result.success();
+        service.preferences(request); service.wake(); return Result.success();
     }
 
     @Auth @PostMapping("/simple/choose")
