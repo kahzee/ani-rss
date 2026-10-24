@@ -27,7 +27,7 @@ final class IdleRetryQueue {
     static Set<String> activeHashes(JsonArray tasks) {
         Set<String> result=new HashSet<>();
         for(JsonElement e:tasks){JsonObject t=e.getAsJsonObject();String s=t.get("state").getAsString().toLowerCase(Locale.ROOT);
-            if(t.get("progress").getAsDouble()<1&&!s.startsWith("paused")&&!s.startsWith("stopped")&&!Set.of("error","missingfiles").contains(s))result.add(t.get("hash").getAsString().toLowerCase(Locale.ROOT));}
+            if(t.get("progress").getAsDouble()<1&&!s.endsWith("up")&&!s.startsWith("paused")&&!s.startsWith("stopped")&&!Set.of("error","missingfiles").contains(s))result.add(t.get("hash").getAsString().toLowerCase(Locale.ROOT));}
         return result;
     }
     static List<Candidate> candidates(State state,Set<String> excludedShows,Set<String> active,Set<String> attempted,long now) {

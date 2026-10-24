@@ -608,7 +608,7 @@ public class SimpleTrackingService {
         for (JsonElement element : tasks) {
             JsonObject task=element.getAsJsonObject();
             String status=task.has("state")?task.get("state").getAsString().toLowerCase(Locale.ROOT):"";
-            if (task.get("progress").getAsDouble() < 1 && !status.startsWith("paused") && !status.startsWith("stopped")&&!status.equals("error")&&!status.equals("missingfiles")) count++;
+            if (task.get("progress").getAsDouble() < 1 && !status.endsWith("up") && !status.startsWith("paused") && !status.startsWith("stopped")&&!status.equals("error")&&!status.equals("missingfiles")) count++;
         }
         return count;
     }

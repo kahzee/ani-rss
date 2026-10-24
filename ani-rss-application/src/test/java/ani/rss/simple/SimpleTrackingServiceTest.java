@@ -44,6 +44,10 @@ class SimpleTrackingServiceTest {
         service.tick();assertEquals(3,dl.tasks.size());assertTrue(store.state().getShows().stream().limit(3).allMatch(s->s.getReleases().getFirst().isIdleProbe()));
         SimpleStore restored=new SimpleStore(root.resolve("state.json"));new DirectService(restored,new Catalog(),dl).tick();assertEquals(3,dl.tasks.size());assertTrue(restored.state().getShows().getFirst().getReleases().getFirst().getLastProbeAt()>0);
     }
+    @Test void uploadOnlyTorrentWithZeroReportedProgressDoesNotBlockIdleRetries() throws Exception {
+        SimpleStore store=configured();addIdleRetries(store,4);Downloader dl=new Downloader();JsonObject upload=new JsonObject();upload.addProperty("hash","upload");upload.addProperty("state","stalledUP");upload.addProperty("progress",0);dl.tasks.put("upload",upload);
+        new DirectService(store,new Catalog(),dl).tick();assertEquals(4,dl.tasks.size());assertEquals(3,SimpleTrackingService.activeCount(dl.tasks()));
+    }
     @Test void normalWorkPreventsIdleProbesButCompletionFillsSpareProbeSlots() throws Exception {
         SimpleStore store=configured();addIdleRetries(store,5);Show normal=show(store,"normal");normal.getReleases().add(release("normal","首选",1));Downloader dl=new Downloader();SimpleTrackingService service=new DirectService(store,new Catalog(),dl);
         service.tick();assertEquals(Set.of("normal"),dl.tasks.keySet());dl.finish("normal");service.tick();assertEquals(4,dl.tasks.size());

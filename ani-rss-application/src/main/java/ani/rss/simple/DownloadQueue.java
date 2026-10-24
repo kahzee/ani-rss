@@ -35,7 +35,7 @@ final class DownloadQueue {
         Set<String> active=new HashSet<>();
         for(JsonElement element:tasks) {
             JsonObject task=element.getAsJsonObject();String status=task.get("state").getAsString().toLowerCase(Locale.ROOT);
-            if(task.get("progress").getAsDouble()<1&&!status.startsWith("paused")&&!status.startsWith("stopped")&&!status.equals("error")&&!status.equals("missingfiles"))active.add(task.get("hash").getAsString().toLowerCase(Locale.ROOT));
+            if(task.get("progress").getAsDouble()<1&&!status.endsWith("up")&&!status.startsWith("paused")&&!status.startsWith("stopped")&&!status.equals("error")&&!status.equals("missingfiles"))active.add(task.get("hash").getAsString().toLowerCase(Locale.ROOT));
         }
         if(!active.contains(currentHash.toLowerCase(Locale.ROOT))||active.size()<state.getSettings().getSimultaneousDownloads())return false;
         for(Show show:state.getShows())for(Release candidate:show.getReleases()) {
