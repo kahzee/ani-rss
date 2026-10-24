@@ -1,0 +1,20 @@
+services:
+  ani-rss-simple:
+    build:
+      context: .
+      dockerfile: Dockerfile.simple
+    image: ani-rss-simple:local
+    restart: unless-stopped
+    ports:
+      - "7789:7789"
+    environment:
+      CONFIG: /config
+      TZ: Asia/Shanghai
+    volumes:
+      - ./config:/config
+      - type: bind
+        source: ${RESOURCE_ROOT:?Set RESOURCE_ROOT to the existing resource library on the NAS}
+        target: /resources
+      - type: bind
+        source: ${PLAYBACK_ROOT:?Set PLAYBACK_ROOT to the fixed playback parent on the NAS}
+        target: /playback

@@ -1,5 +1,4 @@
 import {ElMessage} from "element-plus";
-import {authorization} from "@/js/global.js";
 
 let post = async (url, body, options = {}) => {
     return await fetch_(url, 'POST', body, options);
@@ -19,9 +18,6 @@ let put = async (url, body) => {
 
 let fetch_ = async (url, method, body, options = {}) => {
     let headers = {}
-    if (authorization.value) {
-        headers['Authorization'] = authorization.value
-    }
     if (body) {
         headers['Content-Type'] = 'application/json'
     }
@@ -44,12 +40,6 @@ let fetch_ = async (url, method, body, options = {}) => {
 
             if (!options.silent) {
                 ElMessage.error(message)
-            }
-            if (code === 403) {
-                authorization.value = ''
-                setTimeout(() => {
-                    location.reload()
-                }, 1000)
             }
             return new Promise((resolve, reject) => {
                 reject(new Error(message));
