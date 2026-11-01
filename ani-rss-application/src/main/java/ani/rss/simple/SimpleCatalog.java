@@ -66,15 +66,23 @@ public class SimpleCatalog {
         int page = 1;
         while (page <= 500) {
             int current = page;
-            List<AnimeGarden.Item> resources = HttpReq.get(host + "/resources")
+            List<AnimeGarden.Item> resources;boolean fallback=false;
+            try { resources = HttpReq.get(host + "/resources")
                     .form("subject", show.getId()).form("page", current).form("pageSize", 100).form("duplicate", false)
                     .timeout(20000).thenFunction(response -> {
                         HttpReq.assertStatus(response);
                         JsonObject json = JsonParser.parseString(response.body()).getAsJsonObject();
                         return GsonStatic.fromJsonList(json.getAsJsonArray("resources"), AnimeGarden.Item.class);
                     });
+            } catch(RuntimeException primary) {
+                if(current!=1 || mikanHistory==null)throw primary;
+                try {
+                    resources=mikanHistory.releases(show);fallback=true;
+                    if(resources.isEmpty())throw primary;
+                }catch(Exception secondary){if(secondary!=primary)primary.addSuppressed(secondary);throw primary;}
+            }
             if(current==1 && resources.isEmpty() && mikanHistory!=null) {
-                try{resources=mikanHistory.releases(show);}catch(Exception e){throw new IllegalStateException("蜜柑历史资源暂不可用",e);}
+                try{resources=mikanHistory.releases(show);fallback=true;}catch(Exception e){throw new IllegalStateException("蜜柑历史资源暂不可用",e);}
             }
             for (AnimeGarden.Item resource : resources) {
                 if (resource.getMagnet() == null || resource.getTitle() == null) continue;
@@ -104,7 +112,7 @@ public class SimpleCatalog {
                 if(!batch)EpisodeNumbers.apply(show,release);
                 result.add(release);
             }
-            if (resources.size() < 100) return result;
+            if (fallback || resources.size() < 100) return result;
             page++;
         }
         throw new IllegalStateException("历史资源超过分页上限，请检查番剧关联");

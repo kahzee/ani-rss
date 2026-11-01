@@ -36,7 +36,24 @@ class SimpleTrackingServiceTest {
     static class DirectService extends SimpleTrackingService {
         DirectService(SimpleStore store,SimpleCatalog catalog,SimpleDownloader downloader){super(store,catalog,downloader);}
         @Override public void wake() {}
+        @Override protected java.util.concurrent.Executor catalogExecutor(){return Runnable::run;}
     }
+    @Test void slowCatalogCannotBlockDownloadCompletionAndManualPins() throws Exception {
+        SimpleStore store=configured();Show show=show(store,"slow");show.setLastCatalogAt(0);Release r=release("known","首选",1);show.getReleases().add(r);
+        Path resource=PlaybackLibrary.resourceDirectory(store.state().getSettings(),show,r);Downloader dl=new Downloader();dl.add(r,resource);r.setDownloadPath(resource.toString());r.setStatus("downloading");dl.finish("known");
+        var entered=new java.util.concurrent.CountDownLatch(1);var unblock=new java.util.concurrent.CountDownLatch(1);
+        Catalog slow=new Catalog(){@Override public List<Release> releases(Show copy){entered.countDown();try{unblock.await();}catch(InterruptedException e){Thread.currentThread().interrupt();}return List.of();}};
+        SimpleTrackingService service=new SimpleTrackingService(store,slow,dl){@Override public void wake(){}};
+        try {
+            assertTimeoutPreemptively(java.time.Duration.ofSeconds(3),service::tick);
+            assertTrue(entered.await(2,java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals("known",show.getSelected().get("1"));assertTrue(store.state().getDownloadCheckedAt()>0);
+            VersionRequest pin=new VersionRequest();pin.setShowId(show.getId());pin.setReleaseId("known");service.choose(pin);unblock.countDown();
+            assertTimeoutPreemptively(java.time.Duration.ofSeconds(3),service::tick);
+            assertTrue(show.getPinnedEpisodes().contains("1"));assertEquals("known",show.getSelected().get("1"));
+        }finally{unblock.countDown();service.stopCatalogWorkers();}
+    }
+
     private Release release(String id,String group,int ep) {Release r=new Release();r.setId(id);r.setGroup(group);r.setEpisode(ep);r.setChinese(true);r.setPublishedAt(1);r.setTitle("["+group+"] 测试番 - "+ep+" [CHS]");return r;}
     private void addIdleRetries(SimpleStore store,int count){for(int i=0;i<count;i++){Show s=show(store,"idle"+i);Release r=release("idle"+i,"首选",1);r.setStatus("waiting");r.setRetryAt(Long.MAX_VALUE);s.getReleases().add(r);}}
     @Test void idleCapacityPullsOnlyThreeFutureRetriesAndRestoresFairnessAfterRestart() throws Exception {

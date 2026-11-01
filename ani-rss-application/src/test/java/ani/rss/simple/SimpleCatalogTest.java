@@ -27,6 +27,22 @@ class SimpleCatalogTest {
         assertEquals("",SimpleCatalog.infoHash("magnet:?xt=urn:btih:../../outside"));
     }
 
+    @Test void gardenFailureFallsBackToVerifiedMikanResources() throws Exception {
+        Properties properties=new Properties();properties.setProperty("version","test");
+        GenericApplicationContext context=new GenericApplicationContext();context.registerBean(BuildProperties.class,()->new BuildProperties(properties));context.refresh();new SpringUtil().setApplicationContext(context);
+        HttpServer server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/resources",e->{e.sendResponseHeaders(503,-1);e.close();});server.start();
+        try {
+            SimpleCatalog catalog=new SimpleCatalog("http://127.0.0.1:"+server.getAddress().getPort());
+            var field=SimpleCatalog.class.getDeclaredField("mikanHistory");field.setAccessible(true);
+            field.set(catalog,new MikanHistoryResources(null){@Override public java.util.List<ani.rss.entity.AnimeGarden.Item> releases(Show show){return MikanHistoryResources.parse("<rss><item><title>[Test] 联调样片 - 01 [CHS]</title><enclosure url=\"https://mikanani.me/Download/"+"a".repeat(40)+".torrent\"/></item></rss>");}});
+            Show show=new Show();show.setId("987654321");show.setTitle("联调样片");show.setTotalEpisodes(2);
+            var releases=catalog.releases(show);assertEquals(1,releases.size());assertTrue(releases.getFirst().isChinese());
+            field.set(catalog,new MikanHistoryResources(null){@Override public java.util.List<ani.rss.entity.AnimeGarden.Item> releases(Show ignored){return java.util.List.of();}});
+            assertThrows(RuntimeException.class,()->catalog.releases(show));
+        }finally{server.stop(0);context.close();}
+    }
+
     @Test void parsesRealCatalogResponseThroughTheUpstreamEpisodeRecognizer() throws Exception {
         // HttpReq obtains its user-agent version from Spring, without starting the application workers.
         Properties properties=new Properties();properties.setProperty("version","test");

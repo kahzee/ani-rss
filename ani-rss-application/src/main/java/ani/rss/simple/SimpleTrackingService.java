@@ -39,6 +39,13 @@ public class SimpleTrackingService {
     private record ReuseResult(SimpleDownloader.ExistingState state,Release copy,String error) {}
     private final Map<String,java.util.concurrent.CompletableFuture<ReuseResult>> reuseJobs=new LinkedHashMap<>();
 
+    private record CatalogRefresh(Show metadata,List<Release> resources,Exception failure) {}
+    private final Map<String,java.util.concurrent.CompletableFuture<CatalogRefresh>> catalogJobs=new LinkedHashMap<>();
+    private final java.util.concurrent.ExecutorService catalogPool=java.util.concurrent.Executors.newFixedThreadPool(2,
+            Thread.ofVirtual().name("simple-catalog-",0).factory());
+    protected java.util.concurrent.Executor catalogExecutor(){return catalogPool;}
+    @jakarta.annotation.PreDestroy void stopCatalogWorkers(){catalogPool.shutdownNow();}
+
     public State state() {
         State snapshot=store.snapshot();
         TransferSnapshot latest=transfers;
@@ -231,40 +238,11 @@ public class SimpleTrackingService {
         Set<String> recoveryFailed=new HashSet<>();
         for (Show show : state.getShows()) {
             try {
-                String before=GsonStatic.toJson(show);
-                try {catalog.episodeMetadata(show);} catch(Exception e) {log.debug("本季集数目录暂未刷新: {}",show.getId());}
-                EpisodeNumbers.apply(show);
-                if(!before.equals(GsonStatic.toJson(show))) store.save(); // Persist numbering before playback migration.
                 library.reconcile(settings, show);
             }
             catch (Exception e) { show.setMessage("播放目录恢复待处理：" + brief(e)); recoveryFailed.add(show.getId()); }
         }
-        boolean force = forceCatalog;
-        forceCatalog = false;
-        for (Show show : state.getShows()) {
-            if(recoveryFailed.contains(show.getId())) continue;
-            boolean due=force||show.getLastCatalogAt()==0||(show.getNextCatalogAt()>0?System.currentTimeMillis()>=show.getNextCatalogAt():System.currentTimeMillis()-show.getLastCatalogAt()>=10*60_000L);
-            if (show.isEnabled() && due) {
-                try {
-                    List<Release> fresh = catalog.releases(show);
-                    Map<String,Release> known=new HashMap<>();show.getReleases().forEach(r->known.put(r.getId(),r));boolean changed=false;
-                    for(Release r:fresh){Release old=known.get(r.getId());if(old==null){show.getReleases().add(r);known.put(r.getId(),r);changed=true;}
-                        else if(!Objects.equals(old.getTitle(),r.getTitle())||!Objects.equals(old.getGroup(),r.getGroup())||old.isChinese()!=r.isChinese()){
-                            if(old.getDownloadPath()!=null && (old.isBatch()!=r.isBatch() || !old.isBatch()&&(old.getEpisode()!=r.getEpisode()||!r.getNumberingIssue().isBlank()))) {
-                                show.setCatalogIssue("已下载资源的发布说明改变了集数或季度，保留原文件等待核对");continue;
-                            }
-                            old.setTitle(r.getTitle());old.setGroup(r.getGroup());old.setChinese(r.isChinese());old.setTorrentUrl(r.getTorrentUrl());changed=true;
-                            if(old.getDownloadPath()==null){old.setSourceEpisode(r.getSourceEpisode());old.setEpisode(r.getEpisode());old.setEpisodeId(r.getEpisodeId());old.setNumberingIssue(r.getNumberingIssue());}
-                        }}
-                    show.setUnchangedCatalogs(changed?0:show.getUnchangedCatalogs()+1);
-                    show.setLastCatalogAt(System.currentTimeMillis());
-                    boolean complete=!show.getEpisodeIds().isEmpty()&&show.getSelected().keySet().containsAll(show.getEpisodeIds().keySet());
-                    long interval=show.isHistorical()?(complete&&ReleasePolicy.plan(show,settings).isEmpty()?30L*24*60*60_000:Math.min(24*60*60_000L,10*60_000L*(1L<<Math.min(8,show.getUnchangedCatalogs())))):10*60_000L;
-                    show.setNextCatalogAt(System.currentTimeMillis()+interval);
-                    show.setMessage(fresh.isEmpty() ? "暂无可识别的单集资源；将继续检查历史资源和后续更新" : "资源已更新");
-                } catch (Exception e) {show.setNextCatalogAt(System.currentTimeMillis()+30*60_000L);show.setMessage("资源检索失败，将自动重试：" + brief(e)); }
-            }
-        }
+        refreshCatalogs(state,recoveryFailed);
         if (settings.getDownloadHost().isBlank() || settings.getCredential().isBlank()) {
             state.getShows().forEach(s -> s.setMessage("请先完成一次基础配置，连接下载器和保存目录"));
             store.save();
@@ -387,6 +365,57 @@ public class SimpleTrackingService {
         }
         for(Show show:eligibleShows) updateMessage(show,settings);
         store.save();
+    }
+
+    /** Network calls never hold the tracking lock or delay completion/publish polling. */
+    private void refreshCatalogs(State state,Set<String> excluded) throws IOException {
+        boolean force=forceCatalog;forceCatalog=false;long now=System.currentTimeMillis();
+        for(Show show:state.getShows()) {
+            if(!show.isEnabled()||excluded.contains(show.getId()))continue;
+            var job=catalogJobs.get(show.getId());
+            if(job==null) {
+                boolean due=force||show.getLastCatalogAt()==0||(show.getNextCatalogAt()>0?now>=show.getNextCatalogAt():now-show.getLastCatalogAt()>=10*60_000L);
+                boolean metadataDue=show.getEpisodeIds().isEmpty()||now-show.getEpisodeMetadataAt()>(show.isHistorical()?31L:1L)*24*60*60_000;
+                if(!due&&!metadataDue)continue;
+                Show copy=cloneShow(show);
+                job=new java.util.concurrent.CompletableFuture<>();catalogJobs.put(show.getId(),job);
+                var pending=job;
+                catalogExecutor().execute(()->{
+                    try {
+                        try{catalog.episodeMetadata(copy);}catch(Exception e){log.debug("剧集资料暂未刷新 {}: {}",copy.getId(),brief(e));}
+                        pending.complete(new CatalogRefresh(copy,due?catalog.releases(copy):null,null));
+                    }catch(Exception e){pending.complete(new CatalogRefresh(copy,null,e));}
+                });
+            }
+            if(!job.isDone())continue;
+            CatalogRefresh result=job.join();catalogJobs.remove(show.getId());Show copy=result.metadata();
+            boolean identityChanged=!show.getSelected().isEmpty()&&!show.getEpisodeIds().isEmpty()
+                    &&(show.getEpisodeIds().entrySet().stream().anyMatch(e->!Objects.equals(copy.getEpisodeIds().get(e.getKey()),e.getValue()))
+                    ||show.getEpisodeNumbers().entrySet().stream().anyMatch(e->!Objects.equals(copy.getEpisodeNumbers().get(e.getKey()),e.getValue())));
+            if(identityChanged)show.setCatalogIssue("上游剧集目录发生变化，保留原编号与播放文件等待核对");
+            else {show.setEpisodeIds(copy.getEpisodeIds());show.setEpisodeNumbers(copy.getEpisodeNumbers());show.setTotalEpisodes(copy.getTotalEpisodes());show.setHistorical(copy.isHistorical());show.setCatalogIssue(copy.getCatalogIssue());}
+            show.setEpisodeMetadataAt(copy.getEpisodeMetadataAt());
+            show.setMikanId(copy.getMikanId());show.setMikanCheckedAt(copy.getMikanCheckedAt());show.setMikanRetryAt(copy.getMikanRetryAt());show.setMikanIssue(copy.getMikanIssue());
+            EpisodeNumbers.apply(show);
+            if(result.failure()!=null){show.setNextCatalogAt(now+30*60_000L);show.setMessage("资源检索失败，将自动重试："+brief(result.failure()));continue;}
+            if(result.resources()==null)continue;
+            List<Release> fresh=result.resources();Settings settings=state.getSettings();
+                    Map<String,Release> known=new HashMap<>();show.getReleases().forEach(r->known.put(r.getId(),r));boolean changed=false;
+                    for(Release r:fresh){Release old=known.get(r.getId());if(old==null){show.getReleases().add(r);known.put(r.getId(),r);changed=true;}
+                        else if(!Objects.equals(old.getTitle(),r.getTitle())||!Objects.equals(old.getGroup(),r.getGroup())||old.isChinese()!=r.isChinese()){
+                            if(old.getDownloadPath()!=null && (old.isBatch()!=r.isBatch() || !old.isBatch()&&(old.getEpisode()!=r.getEpisode()||!r.getNumberingIssue().isBlank()))) {
+                                show.setCatalogIssue("已下载资源的发布说明改变了集数或季度，保留原文件等待核对");continue;
+                            }
+                            old.setTitle(r.getTitle());old.setGroup(r.getGroup());old.setChinese(r.isChinese());old.setTorrentUrl(r.getTorrentUrl());changed=true;
+                            if(old.getDownloadPath()==null){old.setSourceEpisode(r.getSourceEpisode());old.setEpisode(r.getEpisode());old.setEpisodeId(r.getEpisodeId());old.setNumberingIssue(r.getNumberingIssue());}
+                        }}
+                    show.setUnchangedCatalogs(changed?0:show.getUnchangedCatalogs()+1);
+                    show.setLastCatalogAt(System.currentTimeMillis());
+                    boolean complete=!show.getEpisodeIds().isEmpty()&&show.getSelected().keySet().containsAll(show.getEpisodeIds().keySet());
+                    long interval=show.isHistorical()?(complete&&ReleasePolicy.plan(show,settings).isEmpty()?30L*24*60*60_000:Math.min(24*60*60_000L,10*60_000L*(1L<<Math.min(8,show.getUnchangedCatalogs())))):10*60_000L;
+                    show.setNextCatalogAt(System.currentTimeMillis()+interval);
+                    show.setMessage(fresh.isEmpty() ? "暂无可识别的单集资源；将继续检查历史资源和后续更新" : "资源已更新");
+        }
     }
 
     private void recheckConflicts(State state) throws IOException {
