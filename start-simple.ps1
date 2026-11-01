@@ -1,6 +1,21 @@
 param([int]$Port = 7789, [switch]$NoBrowser, [string]$Ffprobe = '')
 $ErrorActionPreference = 'Stop'
 $taskRoot = $PSScriptRoot
+# A completed NAS migration must not accidentally start a second Windows scheduler.
+$taskNasReceipt = Join-Path $taskRoot '.run/active-nas.json'
+if (Test-Path -LiteralPath $taskNasReceipt) {
+    $taskNas = Get-Content -LiteralPath $taskNasReceipt -Raw | ConvertFrom-Json
+    if ($taskNas.mode -ne 'nas' -or !$taskNas.url) { throw 'Invalid NAS deployment receipt.' }
+    $taskNasUri = [Uri]$taskNas.url
+    if ($taskNasUri.Scheme -notin @('http','https')) { throw 'Invalid NAS application URL.' }
+    $taskNasBase = $taskNas.url.TrimEnd('/')
+    try { $taskNasReady = Invoke-WebRequest ($taskNasBase + '/api/ping') -UseBasicParsing -TimeoutSec 8 }
+    catch { throw 'The NAS application is unreachable. Check the NAS container; a second local scheduler has not been started.' }
+    if ($taskNasReady.StatusCode -ne 200) { throw 'The NAS application is not ready.' }
+    Write-Host ('Running on NAS: ' + $taskNasBase + '/#/follow')
+    if (!$NoBrowser) { Start-Process ($taskNasBase + '/#/follow') }
+    exit 0
+}
 $taskJar = Join-Path $taskRoot 'ani-rss.jar'
 if (!(Test-Path -LiteralPath $taskJar)) { $taskJar = Join-Path $taskRoot 'ani-rss-application\target\ani-rss.jar' }
 if (!(Test-Path -LiteralPath $taskJar)) { throw 'Missing ani-rss.jar. Build the project or extract the ready-to-run package first.' }
