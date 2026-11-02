@@ -56,6 +56,15 @@ class SimpleTrackingServiceTest {
 
     private Release release(String id,String group,int ep) {Release r=new Release();r.setId(id);r.setGroup(group);r.setEpisode(ep);r.setChinese(true);r.setPublishedAt(1);r.setTitle("["+group+"] 测试番 - "+ep+" [CHS]");return r;}
     private void addIdleRetries(SimpleStore store,int count){for(int i=0;i<count;i++){Show s=show(store,"idle"+i);Release r=release("idle"+i,"首选",1);r.setStatus("waiting");r.setRetryAt(Long.MAX_VALUE);s.getReleases().add(r);}}
+    @Test void completedResourceAwaitingFileVerificationDoesNotBlockOtherIdleRetries() throws Exception {
+        SimpleStore store=configured();Show s=show(store,"unresolved");Release r=release("finished","首选",1);s.getReleases().add(r);
+        Downloader dl=new Downloader(){@Override public void checkFinished(Release release){throw new IllegalStateException("资源包含 2 个视频，需要确认文件与集数的对应关系");}};
+        Path path=PlaybackLibrary.resourceDirectory(store.state().getSettings(),s,r);dl.add(r,path);dl.finish(r.getId());
+        r.setDownloadPath(path.toString());r.setStatus("downloading");addIdleRetries(store,4);
+        new DirectService(store,new Catalog(),dl).tick();
+        assertEquals(100,r.getProgress());assertTrue(s.getSelected().isEmpty());assertTrue(r.getError().contains("2 个视频"));
+        assertEquals(3,SimpleTrackingService.activeCount(dl.tasks()));assertEquals(4,dl.tasks.size());
+    }
     @Test void idleCapacityPullsOnlyThreeFutureRetriesAndRestoresFairnessAfterRestart() throws Exception {
         SimpleStore store=configured();store.state().getSettings().setSimultaneousDownloads(10);addIdleRetries(store,5);Downloader dl=new Downloader();SimpleTrackingService service=new DirectService(store,new Catalog(),dl);
         service.tick();assertEquals(3,dl.tasks.size());assertTrue(store.state().getShows().stream().limit(3).allMatch(s->s.getReleases().getFirst().isIdleProbe()));

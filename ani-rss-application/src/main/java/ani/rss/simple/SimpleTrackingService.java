@@ -348,7 +348,9 @@ public class SimpleTrackingService {
         }
         Set<String> activeHashes=IdleRetryQueue.activeHashes(tasks);
         // Include tasks submitted in this tick, which are not yet present in the qBittorrent snapshot.
-        for(Show show:state.getShows())for(Release r:show.getReleases())if(Set.of("downloading","submitting").contains(r.getStatus()))activeHashes.add(SimpleDownloader.hash(r).toLowerCase(Locale.ROOT));
+        for(Show show:state.getShows())for(Release r:show.getReleases())
+            if(Set.of("downloading","submitting").contains(r.getStatus()) && findTask(tasks,SimpleDownloader.hash(r))==null)
+                activeHashes.add(SimpleDownloader.hash(r).toLowerCase(Locale.ROOT));
         Set<String> probes=IdleRetryQueue.probeHashes(state);
         if(probes.containsAll(activeHashes)) {
             Set<String> tried=new HashSet<>();
