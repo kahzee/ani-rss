@@ -1,9 +1,10 @@
 import {useColorMode, useDark, useDebounceFn, useEventListener, useLocalStorage} from "@vueuse/core";
+import {ref} from 'vue';
 
 /**
  * 保存登录信息
  */
-let rememberThePassword = useLocalStorage('rememberThePassword', {
+let rememberThePassword = ref({
     remember: false,
     username: '',
     password: ''
@@ -12,7 +13,9 @@ let rememberThePassword = useLocalStorage('rememberThePassword', {
 /**
  * 令牌
  */
-const authorization = useLocalStorage('authorization', '')
+const authorization = ref('')
+localStorage.removeItem('authorization')
+localStorage.removeItem('rememberThePassword')
 
 /**
  * 主题管理

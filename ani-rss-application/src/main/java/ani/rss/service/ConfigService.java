@@ -92,7 +92,8 @@ public class ConfigService {
         String loginPassword = config.getLogin().getPassword();
 
         // 密码或用户名发生改动
-        if (!loginUsername.equals(username) || StrUtil.isNotBlank(loginPassword)) {
+        if (StrUtil.isNotBlank(loginUsername) && !loginUsername.equals(username)
+                || StrUtil.isNotBlank(loginPassword) && !loginPassword.equals(password)) {
             config.setTokenId(UUID.randomUUID().toString());
         }
 

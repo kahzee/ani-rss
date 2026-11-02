@@ -127,10 +127,24 @@ public class AuthUtil {
 
             // 会话ID, 多设备登陆可以顶掉
             String sessionId = payloads.getStr("sessionId");
-            return SESSION_ID.equals(sessionId);
+            return !Boolean.TRUE.equals(CONFIG.getMultiLoginForbidden()) || SESSION_ID.equals(sessionId);
         } catch (Exception e) {
             return false;
         }
+    }
+
+    /** Renew active sessions without rotating their session ID or invalidating concurrent requests. */
+    public static String renewToken(String token) {
+        if (!verify(token)) return "";
+        int hours=CONFIG.getLoginEffectiveHours();
+        if(hours<=0) return "";
+        JSONObject payload=JWTUtil.parseToken(token).getPayloads();
+        long expires=payload.getLong("expireTime",0L);
+        long window=Math.min(TimeUnit.DAYS.toMillis(7),TimeUnit.HOURS.toMillis(hours)/4);
+        if(expires==0 || expires-System.currentTimeMillis()>window) return "";
+        Map<String,Object> renewed=new HashMap<>(payload);
+        renewed.put("expireTime",System.currentTimeMillis()+TimeUnit.HOURS.toMillis(hours));
+        return JWTUtil.createToken(renewed,Base64.decode(CONFIG.getJwtKey()));
     }
 
     /**

@@ -1,3 +1,11 @@
+# ANI-RSS · 极简追番分支
+
+关注番剧，自动补齐与追更；按认可字幕组偏好升级版本，资源库保留旧版，正式目录供极影视关联。
+
+默认进入 `/#/follow`，日常只需「找番 → 追番」。启动、部署、版本规则和当前边界请看 [极简追番说明](docs/simple-tracking.md)。
+
+以下保留上游项目介绍。
+
 <div align="center">
 <img alt="icon-512.png" height="80" src="ani-rss-ui/public/icon-512.png"/>
 <h1 align="center" style="margin-top: 0">ANI-RSS</h1>
